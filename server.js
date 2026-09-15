@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'frontend')));
+app.use(express.static(path.join(__dirname, 'frontend')));
 
 function sign(payload){
   return jwt.sign(payload, config.JWT_SECRET, { expiresIn: '90d' });
