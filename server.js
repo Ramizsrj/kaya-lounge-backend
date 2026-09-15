@@ -7,6 +7,10 @@ const config = require('./config');
 
 const app = express();
 
+// The native app (and any other site) loads this page from a different
+// origin than this server, so without these headers the browser/WebView
+// silently blocks every request as a CORS violation — that's what was
+// causing "Can't reach the app's server" even though the server was up.
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
@@ -116,6 +120,115 @@ app.get('/api/rewards', (req, res) => {
   res.json(db.data.rewards);
 });
 
+// ---------------- Menu (public read) ----------------
+
+app.get('/api/menu', (req, res) => {
+  const { category } = req.query;
+  let items = db.data.menuItems.filter(i => i.available);
+  if(category) items = items.filter(i => i.category === category);
+  res.json(items);
+});
+
+app.get('/api/menu/categories', (req, res) => {
+  const order = ['Food', 'Drinks', 'Shisha'];
+  const present = new Set(db.data.menuItems.filter(i => i.available).map(i => i.category));
+  const categories = [...order.filter(c => present.has(c)), ...[...present].filter(c => !order.includes(c))];
+  res.json(categories);
+});
+
+// ---------------- Orders (customer) ----------------
+// No online payment gateways are wired up — every order is "pay in cash at
+// the counter/table", so no merchant credentials are needed for this to work.
+
+app.post('/api/orders', auth('customer'), (req, res) => {
+  const { tableNumber, items, notes, promoCode } = req.body || {};
+  if(!Array.isArray(items) || items.length === 0){
+    return res.status(400).json({ error: 'Add at least one item to your order' });
+  }
+
+  // Look up real prices server-side (never trust prices sent from the app)
+  let subtotal = 0;
+  const resolvedItems = [];
+  for(const item of items){
+    const menuItem = db.data.menuItems.find(m => m.id === item.menuItemId && m.available);
+    if(!menuItem) return res.status(400).json({ error: 'One of the items in your cart is no longer available' });
+    const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+    subtotal += menuItem.price * qty;
+    resolvedItems.push({ menuItemId: menuItem.id, name: menuItem.name, price: menuItem.price, quantity: qty });
+  }
+
+  let discount = 0;
+  let appliedCode = null;
+  if(promoCode){
+    const promo = db.data.promoCodes.find(p => p.code === String(promoCode).toUpperCase() && p.active);
+    if(!promo) return res.status(400).json({ error: 'Invalid or expired promo code' });
+    discount = Math.round(subtotal * (promo.discountPercent / 100));
+    appliedCode = promo.code;
+  }
+  const total = subtotal - discount;
+
+  const order = {
+    id: db.data.nextOrderId++,
+    cardNumber: req.auth.cardNumber,
+    tableNumber: tableNumber ? String(tableNumber).trim() : null,
+    items: resolvedItems,
+    subtotal, discount, promoCode: appliedCode, total,
+    notes: notes ? String(notes).trim() : '',
+    status: 'placed',
+    paymentMethod: 'cod',
+    rating: null,
+    createdAt: Date.now()
+  };
+  db.data.orders.unshift(order);
+  db.save();
+  res.status(201).json({ order, message: 'Pay in cash at the counter when your order arrives.' });
+});
+
+app.get('/api/orders', auth('customer'), (req, res) => {
+  const orders = db.data.orders.filter(o => o.cardNumber === req.auth.cardNumber);
+  res.json(orders);
+});
+
+app.get('/api/orders/:id', auth('customer'), (req, res) => {
+  const order = db.data.orders.find(o => o.id === parseInt(req.params.id, 10) && o.cardNumber === req.auth.cardNumber);
+  if(!order) return res.status(404).json({ error: 'Order not found' });
+  res.json(order);
+});
+
+app.post('/api/orders/:id/rating', auth('customer'), (req, res) => {
+  const value = parseInt(req.body && req.body.rating, 10);
+  if(!Number.isInteger(value) || value < 1 || value > 5){
+    return res.status(400).json({ error: 'Rating must be an integer from 1 to 5' });
+  }
+  const order = db.data.orders.find(o => o.id === parseInt(req.params.id, 10) && o.cardNumber === req.auth.cardNumber);
+  if(!order) return res.status(404).json({ error: 'Order not found' });
+  order.rating = value;
+  db.save();
+  res.json({ ok: true });
+});
+
+// ---------------- Table service requests ----------------
+// Calling a waiter or asking for the bill mirrors pressing a physical call
+// button at the table — no customer login required for this one.
+
+app.post('/api/service', (req, res) => {
+  const { tableNumber, type } = req.body || {};
+  const validTypes = ['waiter', 'bill'];
+  if(!tableNumber || !validTypes.includes(type)){
+    return res.status(400).json({ error: 'Table number and a valid request type are required' });
+  }
+  const request = {
+    id: db.data.nextServiceId++,
+    tableNumber: String(tableNumber).trim(),
+    type,
+    status: 'pending',
+    createdAt: Date.now()
+  };
+  db.data.serviceRequests.unshift(request);
+  db.save();
+  res.status(201).json({ ok: true, id: request.id });
+});
+
 // ---------------- Staff ----------------
 
 app.post('/api/staff/login', (req, res) => {
@@ -188,6 +301,38 @@ app.delete('/api/staff/rewards/:id', auth('staff'), (req, res) => {
   res.status(204).end();
 });
 
+// Staff: live order board (kitchen/floor view)
+app.get('/api/staff/orders', auth('staff'), (req, res) => {
+  const active = db.data.orders.filter(o => ['placed', 'preparing', 'ready'].includes(o.status));
+  res.json(active);
+});
+
+app.patch('/api/staff/orders/:id/status', auth('staff'), (req, res) => {
+  const validStatuses = ['placed', 'preparing', 'ready', 'served', 'cancelled'];
+  const { status } = req.body || {};
+  if(!validStatuses.includes(status)){
+    return res.status(400).json({ error: `status must be one of ${validStatuses.join(', ')}` });
+  }
+  const order = db.data.orders.find(o => o.id === parseInt(req.params.id, 10));
+  if(!order) return res.status(404).json({ error: 'Order not found' });
+  order.status = status;
+  db.save();
+  res.json({ ok: true, status });
+});
+
+// Staff: pending table-service requests
+app.get('/api/staff/service', auth('staff'), (req, res) => {
+  res.json(db.data.serviceRequests.filter(r => r.status === 'pending'));
+});
+
+app.patch('/api/staff/service/:id', auth('staff'), (req, res) => {
+  const request = db.data.serviceRequests.find(r => r.id === parseInt(req.params.id, 10));
+  if(!request) return res.status(404).json({ error: 'Request not found' });
+  request.status = 'resolved';
+  db.save();
+  res.json({ ok: true });
+});
+
 // ---------------- Admin ----------------
 
 app.post('/api/admin/login', (req, res) => {
@@ -247,6 +392,29 @@ app.delete('/api/admin/staff/:name', auth('admin'), (req, res) => {
   db.data.staff = db.data.staff.filter(s => s.name.toLowerCase() !== name.toLowerCase());
   db.save();
   res.status(204).end();
+});
+
+app.patch('/api/admin/staff/:name/pin', auth('admin'), (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const pin = String((req.body && req.body.pin) || '').trim();
+  if(!pin) return res.status(400).json({ error: 'A new PIN is required' });
+  const staffMember = db.data.staff.find(s => s.name.toLowerCase() === name.toLowerCase());
+  if(!staffMember) return res.status(404).json({ error: 'Staff member not found' });
+  staffMember.pin = pin;
+  db.save();
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/members/:cardNumber/reset-password', auth('admin'), (req, res) => {
+  const cardNumber = req.params.cardNumber.toUpperCase();
+  const member = db.data.members[cardNumber];
+  if(!member) return res.status(404).json({ error: 'No card found with that number' });
+  const password = String((req.body && req.body.password) || '').trim();
+  if(!password || password.length < 4) return res.status(400).json({ error: 'New password must be at least 4 characters' });
+  member.passwordHash = bcrypt.hashSync(password, 10);
+  logActivity('password_reset', cardNumber, 'admin');
+  db.save();
+  res.json({ ok: true, name: member.name });
 });
 
 app.listen(config.PORT, () => {
