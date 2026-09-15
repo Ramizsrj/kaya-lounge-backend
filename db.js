@@ -1,13 +1,11 @@
-const fs = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 
-// On Render, DATA_DIR should point at the mounted persistent disk (e.g. /data)
-// so member/staff/reward data survives redeploys and restarts — without this,
-// Render's free/ephemeral filesystem can wipe everything on the next deploy.
-// Locally (no DATA_DIR set), this just falls back to living next to this file,
-// same as before.
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-const DB_FILE = path.join(DATA_DIR, 'data.json');
+// Set MONGODB_URI (on Render: Environment tab) to a free MongoDB Atlas
+// connection string to make all data (members, staff, orders, etc.) survive
+// redeploys and restarts. Without it, data only lives in memory for as long
+// as this process runs — fine for local testing, NOT fine for production.
+const MONGODB_URI = process.env.MONGODB_URI || '';
+const DOC_ID = 'kaya-lounge';
 
 function defaultData(){
   return {
@@ -54,32 +52,57 @@ function defaultData(){
   };
 }
 
-function load(){
-  if(!fs.existsSync(DB_FILE)){
-    const data = defaultData();
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-    return data;
-  }
-  const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+// Fills in any fields a stored document predates (e.g. an old save from
+// before the ordering system existed) without touching what's already there.
+function withDefaults(stored){
   const dd = defaultData();
-  if(!data.staff) data.staff = dd.staff;
-  if(!data.menuItems) data.menuItems = dd.menuItems;
-  if(!data.nextMenuItemId) data.nextMenuItemId = dd.nextMenuItemId;
-  if(!data.promoCodes) data.promoCodes = dd.promoCodes;
-  if(!data.orders) data.orders = [];
-  if(!data.nextOrderId) data.nextOrderId = 1;
-  if(!data.serviceRequests) data.serviceRequests = [];
-  if(!data.nextServiceId) data.nextServiceId = 1;
-  return data;
+  const merged = Object.assign({}, dd, stored);
+  if(!merged.menuItems || !merged.menuItems.length) merged.menuItems = dd.menuItems;
+  if(!merged.promoCodes) merged.promoCodes = dd.promoCodes;
+  if(!merged.orders) merged.orders = [];
+  if(!merged.nextOrderId) merged.nextOrderId = 1;
+  if(!merged.serviceRequests) merged.serviceRequests = [];
+  if(!merged.nextServiceId) merged.nextServiceId = 1;
+  if(!merged.nextMenuItemId) merged.nextMenuItemId = dd.nextMenuItemId;
+  if(!merged.staff || !merged.staff.length) merged.staff = dd.staff;
+  return merged;
 }
 
-let data = load();
+let data = defaultData();
+let collection = null;
+
+const ready = (async () => {
+  if(!MONGODB_URI){
+    console.log('No MONGODB_URI set — running with in-memory data only. This will NOT survive a restart. Set MONGODB_URI (see backend README) to persist data.');
+    return;
+  }
+  try{
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    collection = client.db('kayalounge').collection('state');
+    const existing = await collection.findOne({ _id: DOC_ID });
+    if(existing){
+      delete existing._id;
+      data = withDefaults(existing);
+    }else{
+      await collection.insertOne(Object.assign({ _id: DOC_ID }, data));
+    }
+    console.log('Connected to MongoDB Atlas — data will persist across restarts.');
+  }catch(err){
+    console.error('Could not connect to MongoDB, falling back to in-memory data (will NOT persist):', err.message);
+    collection = null;
+  }
+})();
 
 function save(){
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  if(!collection) return;
+  collection.replaceOne({ _id: DOC_ID }, Object.assign({ _id: DOC_ID }, data)).catch(err => {
+    console.error('Failed to save to MongoDB:', err.message);
+  });
 }
 
 module.exports = {
   get data(){ return data; },
-  save
+  save,
+  ready: () => ready
 };

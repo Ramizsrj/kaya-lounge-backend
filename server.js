@@ -417,13 +417,15 @@ app.post('/api/admin/members/:cardNumber/reset-password', auth('admin'), (req, r
   res.json({ ok: true, name: member.name });
 });
 
-app.listen(config.PORT, () => {
-  const url = `http://localhost:${config.PORT}`;
-  console.log(`Kaya Lounge server running at ${url}`);
-  console.log('Opening it in your browser now... (if nothing opens, just visit the address above yourself)');
+db.ready().then(() => {
+  app.listen(config.PORT, () => {
+    const url = `http://localhost:${config.PORT}`;
+    console.log(`Kaya Lounge server running at ${url}`);
+    console.log('Opening it in your browser now... (if nothing opens, just visit the address above yourself)');
 
-  const openCommand = process.platform === 'win32' ? `start "" "${url}"`
-    : process.platform === 'darwin' ? `open "${url}"`
-    : `xdg-open "${url}"`;
-  require('child_process').exec(openCommand, () => {});
+    const openCommand = process.platform === 'win32' ? `start "" "${url}"`
+      : process.platform === 'darwin' ? `open "${url}"`
+      : `xdg-open "${url}"`;
+    require('child_process').exec(openCommand, () => {});
+  });
 });
