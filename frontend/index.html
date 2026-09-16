@@ -86,7 +86,7 @@ async function api(path, method, body, token){
     // that confusing default browser message needs replacing with something
     // actionable.
     state.serverUnreachable=true;
-    throw new Error("Can't reach the app's server. Make sure the black terminal window (from start-windows.bat / npm start) is still open and running, then try again.");
+    throw new Error("Can't reach the server right now. If the app has been idle for a while, the server may just be waking up — please wait a few seconds and try again.");
   }
   state.serverUnreachable=false;
   let data={};
@@ -180,7 +180,7 @@ function render(){
   const banner = state.serverUnreachable
     ? `<div style="background:#3a1414;border-bottom:1px solid ${theme.ruby};padding:10px 14px;text-align:center">
         <p style="color:#ff9a7a;font-size:11px;font-weight:700;margin:0 0 2px">⚠️ Can't reach the app's server</p>
-        <p style="color:#f0c9bd;font-size:10px;margin:0">Make sure the black terminal window is still open and running, then <a href="javascript:location.reload()" style="color:#fff;text-decoration:underline">refresh this page</a>.</p>
+        <p style="color:#f0c9bd;font-size:10px;margin:0">The server may just be waking up from being idle — wait a few seconds, then <a href="javascript:location.reload()" style="color:#fff;text-decoration:underline">refresh this page</a>.</p>
       </div>`
     : '';
   const staffAlertSteps=['staffLookup','staffMember','staffRewards','staffOrders','staffService'];
