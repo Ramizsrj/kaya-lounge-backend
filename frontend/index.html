@@ -126,6 +126,7 @@ let state={
   adminToken:null, adminError:'', staffList:[], staffAdminError:'', serverUnreachable:false,
   resetPinFor:'', resetPinValue:'', resetPinError:'',
   resetPwCard:'', resetPwPassword:'', resetPwError:'', resetPwMsg:'',
+  adminMenuItems:[], newMenuName:'', newMenuDesc:'', newMenuPrice:'', newMenuCategory:'Food', menuAdminError:'',
 
   // Ordering (menu / cart / table service)
   lang: localStorage.getItem('kayaLang') || 'en',
@@ -562,6 +563,17 @@ function renderAdminPanel(){
       `:''}
     </div>`;
   }).join('');
+  const menuRows = (state.adminMenuItems || []).map(m=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:8px;opacity:${m.available?1:0.5}">
+      <div>
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${m.name} <span style="color:${theme.textDim};font-weight:400">· Rs ${m.price}</span></p>
+        <p style="color:${theme.textDim};font-size:10px;margin:2px 0 0">${m.category}${m.available?'':' · unavailable'}</p>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button data-toggle-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.teal};color:${theme.teal};border-radius:8px;padding:6px 10px;font-size:11px;white-space:nowrap">${m.available?'Hide':'Show'}</button>
+        <button data-remove-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px">Remove</button>
+      </div>
+    </div>`).join('');
   const logRows = stats.activity.map(a=>`
     <div style="text-align:left;font-size:11px;color:${theme.textDim};padding:8px 0;border-bottom:1px solid ${theme.border}">
       <span style="color:${theme.text}">${actionLabel(a.action)}</span> — ${a.memberName||'?'} (${a.cardNumber||'—'}) <span style="color:${theme.teal}">by ${a.staffName||'—'}</span>${a.detail?` · ${a.detail}`:''}
@@ -610,6 +622,24 @@ function renderAdminPanel(){
       ${state.resetPwError ? `<p style="color:${theme.ruby};font-size:11px;margin:6px 0 0">${state.resetPwError}</p>` : ''}
       ${state.resetPwMsg ? `<p style="color:${theme.teal};font-size:11px;margin:6px 0 0">${state.resetPwMsg}</p>` : ''}
       <button id="resetPwSubmit" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px;margin-top:8px">Reset password</button>
+    </div>
+    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Menu items</p>
+    ${menuRows || `<p style="color:${theme.textDim};font-size:11px;text-align:center;margin:0 0 10px">No menu items yet</p>`}
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-top:6px;margin-bottom:16px;text-align:left">
+      <div class="label" style="margin-top:0">Item name</div>
+      <input id="newMenuName" placeholder="e.g. Nutella Waffle" value="${state.newMenuName}" />
+      <div class="label">Description (optional)</div>
+      <input id="newMenuDesc" placeholder="e.g. Warm waffle with Nutella and banana" value="${state.newMenuDesc}" />
+      <div class="label">Price (Rs)</div>
+      <input id="newMenuPrice" type="number" min="1" placeholder="e.g. 650" value="${state.newMenuPrice}" />
+      <div class="label">Category</div>
+      <select id="newMenuCategory" style="width:100%;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;color:${theme.text};font-size:15px;margin-bottom:10px">
+        <option value="Food" ${state.newMenuCategory==='Food'?'selected':''}>Food</option>
+        <option value="Drinks" ${state.newMenuCategory==='Drinks'?'selected':''}>Drinks</option>
+        <option value="Shisha" ${state.newMenuCategory==='Shisha'?'selected':''}>Shisha</option>
+      </select>
+      ${state.menuAdminError ? `<p style="color:${theme.ruby};font-size:11px;margin:0 0 8px">${state.menuAdminError}</p>` : ''}
+      <button id="addMenuItem" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px">+ Add menu item</button>
     </div>
     <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 8px">Recent activity</p>
     <div style="max-height:220px;overflow-y:auto">${logRows || `<p style="color:${theme.textDim};font-size:11px">No activity yet</p>`}</div>
@@ -1186,11 +1216,44 @@ function bind(){
     }catch(err){ state.resetPwError=err.message; state.resetPwMsg=''; }
     render();
   };
+
+  if(q('addMenuItem')) q('addMenuItem').onclick=async ()=>{
+    const name=(q('newMenuName').value||'').trim();
+    const description=(q('newMenuDesc').value||'').trim();
+    const price=parseFloat(q('newMenuPrice').value);
+    const category=q('newMenuCategory').value;
+    state.newMenuName=name; state.newMenuDesc=description; state.newMenuPrice=q('newMenuPrice').value; state.newMenuCategory=category;
+    if(!name || !price || price<=0){ state.menuAdminError='Name and a valid price are required'; render(); return; }
+    try{
+      await api('/api/admin/menu','POST',{name,description,price,category},state.adminToken);
+      state.menuAdminError=''; state.newMenuName=''; state.newMenuDesc=''; state.newMenuPrice='';
+      state.adminMenuItems=await api('/api/admin/menu','GET',null,state.adminToken);
+    }catch(err){ state.menuAdminError=err.message; }
+    render();
+  };
+  document.querySelectorAll('[data-toggle-menu-item]').forEach(btn=>{
+    btn.onclick=async ()=>{
+      const id=parseInt(btn.dataset.toggleMenuItem,10);
+      const item=(state.adminMenuItems||[]).find(m=>m.id===id);
+      if(!item) return;
+      await api('/api/admin/menu/'+id,'PATCH',{available:!item.available},state.adminToken);
+      state.adminMenuItems=await api('/api/admin/menu','GET',null,state.adminToken);
+      render();
+    };
+  });
+  document.querySelectorAll('[data-remove-menu-item]').forEach(btn=>{
+    btn.onclick=async ()=>{
+      await api('/api/admin/menu/'+btn.dataset.removeMenuItem,'DELETE',null,state.adminToken);
+      state.adminMenuItems=await api('/api/admin/menu','GET',null,state.adminToken);
+      render();
+    };
+  });
 }
 
 async function loadAdminData(){
   state.adminStats=await api('/api/admin/stats','GET',null,state.adminToken);
   state.staffList=await api('/api/admin/staff','GET',null,state.adminToken);
+  state.adminMenuItems=await api('/api/admin/menu','GET',null,state.adminToken);
 }
 
 async function init(){
