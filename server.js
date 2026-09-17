@@ -405,6 +405,47 @@ app.patch('/api/admin/staff/:name/pin', auth('admin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- Admin: menu management ----------------
+
+app.get('/api/admin/menu', auth('admin'), (req, res) => {
+  res.json(db.data.menuItems);
+});
+
+app.post('/api/admin/menu', auth('admin'), (req, res) => {
+  const name = String((req.body && req.body.name) || '').trim();
+  const description = String((req.body && req.body.description) || '').trim();
+  const price = parseFloat(req.body && req.body.price);
+  const category = String((req.body && req.body.category) || '').trim();
+  if(!name || !price || price <= 0 || !category){
+    return res.status(400).json({ error: 'Name, price, and category are required' });
+  }
+  const item = { id: db.data.nextMenuItemId++, name, description, price, category, available: true };
+  db.data.menuItems.push(item);
+  db.save();
+  res.status(201).json(item);
+});
+
+app.patch('/api/admin/menu/:id', auth('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const item = db.data.menuItems.find(i => i.id === id);
+  if(!item) return res.status(404).json({ error: 'Menu item not found' });
+  const body = req.body || {};
+  if(body.name !== undefined) item.name = String(body.name).trim();
+  if(body.description !== undefined) item.description = String(body.description).trim();
+  if(body.price !== undefined) item.price = parseFloat(body.price);
+  if(body.category !== undefined) item.category = String(body.category).trim();
+  if(body.available !== undefined) item.available = !!body.available;
+  db.save();
+  res.json(item);
+});
+
+app.delete('/api/admin/menu/:id', auth('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  db.data.menuItems = db.data.menuItems.filter(i => i.id !== id);
+  db.save();
+  res.status(204).end();
+});
+
 app.post('/api/admin/members/:cardNumber/reset-password', auth('admin'), (req, res) => {
   const cardNumber = req.params.cardNumber.toUpperCase();
   const member = db.data.members[cardNumber];
