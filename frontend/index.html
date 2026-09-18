@@ -262,18 +262,27 @@ function stopPopupChecking(){
 function checkPopups(){
   if(state.popupToShow || !state.member || !(state.popups||[]).length) return;
   const now=new Date();
-  const nowHM=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  const nowMinutes=now.getHours()*60+now.getMinutes();
   const today=now.toISOString().slice(0,10);
   const shownKey='kayaShownPopups_'+today;
   let shown=[];
   try{ shown=JSON.parse(localStorage.getItem(shownKey)||'[]'); }catch(e){}
-  const matches=state.popups.filter(p=>p.time===nowHM && !shown.includes(p.id));
-  if(matches.length){
-    const pick=matches[Math.floor(Math.random()*matches.length)];
-    state.popups.filter(p=>p.time===nowHM).forEach(p=>{ if(!shown.includes(p.id)) shown.push(p.id); });
+  // Fire the first not-yet-shown time slot whose scheduled time has already
+  // passed today — this way a customer still gets it even if they open the
+  // app a few minutes (or hours) after 12:00/16:00, not only in the exact
+  // minute the clock hits that time.
+  const times=[...new Set(state.popups.map(p=>p.time))].sort();
+  for(const time of times){
+    const [h,m]=time.split(':').map(Number);
+    if(h*60+m > nowMinutes) continue;
+    const group=state.popups.filter(p=>p.time===time);
+    if(group.some(p=>shown.includes(p.id))) continue;
+    const pick=group[Math.floor(Math.random()*group.length)];
+    group.forEach(p=>{ if(!shown.includes(p.id)) shown.push(p.id); });
     localStorage.setItem(shownKey, JSON.stringify(shown));
     state.popupToShow=pick;
     render();
+    return;
   }
 }
 
