@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 const config = require('./config');
+const email = require('./email');
 
 const app = express();
 
@@ -58,6 +59,7 @@ function publicMember(m){
   return {
     cardNumber: m.cardNumber,
     name: m.name,
+    email: m.email || '',
     phone: m.phone,
     visits: m.visits,
     cycle: m.cycle,
@@ -66,46 +68,130 @@ function publicMember(m){
   };
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 // ---------------- Customer ----------------
 
-app.post('/api/customer/signup', (req, res) => {
-  const { name, password, phone } = req.body || {};
+app.post('/api/customer/signup', async (req, res) => {
+  const { name, email: emailInput, password, phone } = req.body || {};
   const cleanName = String(name || '').trim();
+  const cleanEmail = String(emailInput || '').trim().toLowerCase();
   if(!cleanName || !password){
     return res.status(400).json({ error: 'Name and password are required' });
   }
-  const exists = Object.values(db.data.members).some(m => m.name.toLowerCase() === cleanName.toLowerCase());
-  if(exists){
+  if(!cleanEmail || !EMAIL_RE.test(cleanEmail)){
+    return res.status(400).json({ error: 'A valid email is required' });
+  }
+  const nameTaken = Object.values(db.data.members).some(m => m.name.toLowerCase() === cleanName.toLowerCase());
+  if(nameTaken){
     return res.status(409).json({ error: 'That name already has a card — try logging in instead' });
   }
+  const emailTaken = Object.values(db.data.members).some(m => m.email && m.email.toLowerCase() === cleanEmail);
+  if(emailTaken){
+    return res.status(409).json({ error: 'That email is already registered — try logging in instead' });
+  }
   const cardNumber = 'KY-' + String(db.data.nextCardNum++).padStart(4, '0');
+  const code = email.generateCode();
   const member = {
     cardNumber,
     name: cleanName,
+    email: cleanEmail,
     passwordHash: bcrypt.hashSync(password, 10),
     phone: String(phone || '').trim(),
     visits: 0,
     cycle: 10,
     totalVisits: 0,
-    redeemed: []
+    redeemed: [],
+    emailVerified: false,
+    verificationCode: code,
+    verificationExpiry: Date.now() + 15 * 60 * 1000
   };
   db.data.members[cardNumber] = member;
   logActivity('card_created', cardNumber, '');
   db.save();
-  const token = sign({ role: 'customer', cardNumber });
-  res.status(201).json({ token, member: publicMember(member) });
+  await email.sendVerificationEmail(cleanEmail, code);
+  res.status(201).json({ pendingVerification: true, cardNumber, email: cleanEmail });
+});
+
+app.post('/api/customer/verify-email', (req, res) => {
+  const { cardNumber, code } = req.body || {};
+  const member = db.data.members[String(cardNumber || '').toUpperCase()];
+  if(!member) return res.status(404).json({ error: 'Card not found' });
+  if(member.emailVerified){
+    const token = sign({ role: 'customer', cardNumber: member.cardNumber });
+    return res.json({ token, member: publicMember(member) });
+  }
+  if(!member.verificationCode || member.verificationCode !== String(code || '').trim() || Date.now() > member.verificationExpiry){
+    return res.status(400).json({ error: 'That code is incorrect or has expired' });
+  }
+  member.emailVerified = true;
+  member.verificationCode = null;
+  member.verificationExpiry = null;
+  db.save();
+  const token = sign({ role: 'customer', cardNumber: member.cardNumber });
+  res.json({ token, member: publicMember(member) });
+});
+
+app.post('/api/customer/resend-verification', async (req, res) => {
+  const { cardNumber } = req.body || {};
+  const member = db.data.members[String(cardNumber || '').toUpperCase()];
+  if(!member) return res.status(404).json({ error: 'Card not found' });
+  if(member.emailVerified) return res.status(400).json({ error: 'This email is already verified' });
+  const code = email.generateCode();
+  member.verificationCode = code;
+  member.verificationExpiry = Date.now() + 15 * 60 * 1000;
+  db.save();
+  await email.sendVerificationEmail(member.email, code);
+  res.json({ sent: true });
 });
 
 app.post('/api/customer/login', (req, res) => {
-  const { name, password } = req.body || {};
+  const { identifier, password } = req.body || {};
+  const clean = String(identifier || '').trim().toLowerCase();
   const member = Object.values(db.data.members).find(
-    m => m.name.toLowerCase() === String(name || '').trim().toLowerCase()
+    m => m.name.toLowerCase() === clean || (m.email && m.email.toLowerCase() === clean)
   );
   if(!member || !bcrypt.compareSync(String(password || ''), member.passwordHash)){
-    return res.status(401).json({ error: 'Name or password not recognized' });
+    return res.status(401).json({ error: 'Name/email or password not recognized' });
+  }
+  if(member.emailVerified === false){
+    return res.status(403).json({ error: 'Please verify your email before logging in', needsVerification: true, cardNumber: member.cardNumber });
   }
   const token = sign({ role: 'customer', cardNumber: member.cardNumber });
   res.json({ token, member: publicMember(member) });
+});
+
+app.post('/api/customer/forgot-password', async (req, res) => {
+  const { email: emailInput } = req.body || {};
+  const cleanEmail = String(emailInput || '').trim().toLowerCase();
+  const member = Object.values(db.data.members).find(m => m.email && m.email.toLowerCase() === cleanEmail);
+  // Always respond the same way whether or not the email exists, so this
+  // endpoint can't be used to check who has an account.
+  if(member){
+    const code = email.generateCode();
+    member.resetCode = code;
+    member.resetExpiry = Date.now() + 15 * 60 * 1000;
+    db.save();
+    await email.sendPasswordResetEmail(member.email, code);
+  }
+  res.json({ sent: true });
+});
+
+app.post('/api/customer/reset-password', (req, res) => {
+  const { email: emailInput, code, newPassword } = req.body || {};
+  const cleanEmail = String(emailInput || '').trim().toLowerCase();
+  const member = Object.values(db.data.members).find(m => m.email && m.email.toLowerCase() === cleanEmail);
+  if(!member || !member.resetCode || member.resetCode !== String(code || '').trim() || Date.now() > member.resetExpiry){
+    return res.status(400).json({ error: 'That code is incorrect or has expired' });
+  }
+  if(!newPassword || String(newPassword).length < 4){
+    return res.status(400).json({ error: 'Choose a password at least 4 characters long' });
+  }
+  member.passwordHash = bcrypt.hashSync(String(newPassword), 10);
+  member.resetCode = null;
+  member.resetExpiry = null;
+  db.save();
+  res.json({ ok: true });
 });
 
 app.get('/api/customer/me', auth('customer'), (req, res) => {
@@ -118,6 +204,14 @@ app.get('/api/customer/me', auth('customer'), (req, res) => {
 
 app.get('/api/rewards', (req, res) => {
   res.json(db.data.rewards);
+});
+
+app.get('/api/announcement', (req, res) => {
+  res.json(db.data.announcement || null);
+});
+
+app.get('/api/popups', (req, res) => {
+  res.json(db.data.popupNotifications);
 });
 
 // ---------------- Menu (public read) ----------------
@@ -442,6 +536,45 @@ app.patch('/api/admin/menu/:id', auth('admin'), (req, res) => {
 app.delete('/api/admin/menu/:id', auth('admin'), (req, res) => {
   const id = parseInt(req.params.id, 10);
   db.data.menuItems = db.data.menuItems.filter(i => i.id !== id);
+  db.save();
+  res.status(204).end();
+});
+
+// ---------------- Admin: customer announcements ----------------
+// A single active message shown to every customer (banner on the wallet
+// screen) — used for promotions, reminders, or general updates.
+
+app.post('/api/admin/announcement', auth('admin'), (req, res) => {
+  const message = String((req.body && req.body.message) || '').trim();
+  if(!message) return res.status(400).json({ error: 'Message is required' });
+  db.data.announcement = { message, ts: Date.now() };
+  db.save();
+  res.json(db.data.announcement);
+});
+
+app.delete('/api/admin/announcement', auth('admin'), (req, res) => {
+  db.data.announcement = null;
+  db.save();
+  res.status(204).end();
+});
+
+// ---------------- Admin: scheduled popup reminders ----------------
+
+app.post('/api/admin/popups', auth('admin'), (req, res) => {
+  const time = String((req.body && req.body.time) || '').trim();
+  const message = String((req.body && req.body.message) || '').trim();
+  if(!/^\d{2}:\d{2}$/.test(time) || !message){
+    return res.status(400).json({ error: 'A valid time and a message are required' });
+  }
+  const popup = { id: db.data.nextPopupId++, time, message };
+  db.data.popupNotifications.push(popup);
+  db.save();
+  res.status(201).json(popup);
+});
+
+app.delete('/api/admin/popups/:id', auth('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  db.data.popupNotifications = db.data.popupNotifications.filter(p => p.id !== id);
   db.save();
   res.status(204).end();
 });
