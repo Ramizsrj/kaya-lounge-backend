@@ -57,17 +57,9 @@ function defaultData(){
     // day to day instead of repeating the exact same line every time.
     popupNotifications: [
       { id: 1, time: '12:00', message: "Psst — it's 12pm and you're already one of our favourite people today. No big deal, just facts. 😎" },
-      { id: 2, time: '12:00', message: "Reminder: without you, our shisha coals would just sit there looking sad. Thanks for being awesome. ☁️" },
-      { id: 3, time: '12:00', message: "Breaking news at noon: The Kaya Lounge regulars are officially the coolest people in town. That's you. Yes, you." },
-      { id: 4, time: '12:00', message: "It's midday and we just wanted to say — you make Kaya Lounge, Kaya Lounge. Come prove it again today?" },
-      { id: 5, time: '12:00', message: "Lunch break PSA: you deserve a 'treat yourself' energy today. Kaya Lounge is open and ready." },
-      { id: 6, time: '16:00', message: "The evening's calling, and honestly, so are we. Come unwind at Kaya Lounge — good food, smooth shisha, and the vibe you've been needing all day." },
-      { id: 7, time: '16:00', message: "4 o'clock thought: your day's been a lot. Let Kaya Lounge handle the rest — relax, eat, smoke, chill, repeat." },
-      { id: 8, time: '16:00', message: "Golden hour, golden vibes. Swing by Kaya Lounge for a bite, a puff, and some well-earned chill time." },
-      { id: 9, time: '16:00', message: "Long day? Kaya Lounge has your seat warm, your flavour ready, and zero judgement about how long you stay." },
-      { id: 10, time: '16:00', message: "This is your 4pm sign to log off early and come vibe with us — food, shisha, good company. Kaya Lounge is waiting." }
+      { id: 2, time: '16:00', message: "The evening's calling, and honestly, so are we. Come unwind at Kaya Lounge — good food, smooth shisha, and the vibe you've been needing all day." }
     ],
-    nextPopupId: 11
+    nextPopupId: 3
   };
 }
 
