@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const db = require('./db');
 const config = require('./config');
 const email = require('./email');
+const push = require('./push');
 
 const app = express();
 
@@ -104,7 +105,8 @@ app.post('/api/customer/signup', async (req, res) => {
     redeemed: [],
     emailVerified: false,
     verificationCode: code,
-    verificationExpiry: Date.now() + 15 * 60 * 1000
+    verificationExpiry: Date.now() + 15 * 60 * 1000,
+    pushTokens: []
   };
   db.data.members[cardNumber] = member;
   logActivity('card_created', cardNumber, '');
@@ -200,6 +202,20 @@ app.get('/api/customer/me', auth('customer'), (req, res) => {
   res.json({ member: publicMember(member) });
 });
 
+// Registers this device/browser to receive real push notifications (lock
+// screen / notification tray) — called once the app has permission and a
+// Firebase Cloud Messaging token. Safe to call again with the same token.
+app.post('/api/customer/register-push', auth('customer'), (req, res) => {
+  const member = db.data.members[req.auth.cardNumber];
+  if(!member) return res.status(404).json({ error: 'Card not found' });
+  const token = String((req.body && req.body.token) || '').trim();
+  if(!token) return res.status(400).json({ error: 'A push token is required' });
+  if(!member.pushTokens) member.pushTokens = [];
+  if(!member.pushTokens.includes(token)) member.pushTokens.push(token);
+  db.save();
+  res.json({ ok: true });
+});
+
 // ---------------- Rewards (public read) ----------------
 
 app.get('/api/rewards', (req, res) => {
@@ -271,6 +287,7 @@ app.post('/api/orders', auth('customer'), (req, res) => {
     status: 'placed',
     paymentMethod: 'cod',
     rating: null,
+    feedback: null,
     createdAt: Date.now()
   };
   db.data.orders.unshift(order);
@@ -297,8 +314,33 @@ app.post('/api/orders/:id/rating', auth('customer'), (req, res) => {
   const order = db.data.orders.find(o => o.id === parseInt(req.params.id, 10) && o.cardNumber === req.auth.cardNumber);
   if(!order) return res.status(404).json({ error: 'Order not found' });
   order.rating = value;
+  order.feedback = String((req.body && req.body.feedback) || '').trim().slice(0, 500) || null;
   db.save();
   res.json({ ok: true });
+});
+
+// Reviews (rated orders) — visible to both staff and admin so everyone
+// serving customers can see how orders are landing, not just management.
+function buildReviewsList(){
+  return db.data.orders
+    .filter(o => o.rating)
+    .map(o => ({
+      orderId: o.id,
+      cardNumber: o.cardNumber,
+      memberName: (db.data.members[o.cardNumber] || {}).name || '—',
+      rating: o.rating,
+      feedback: o.feedback || '',
+      items: o.items.map(i => `${i.quantity}× ${i.name}`).join(', '),
+      tableNumber: o.tableNumber,
+      createdAt: o.createdAt
+    }))
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+app.get('/api/staff/reviews', auth('staff'), (req, res) => {
+  res.json(buildReviewsList());
+});
+app.get('/api/admin/reviews', auth('admin'), (req, res) => {
+  res.json(buildReviewsList());
 });
 
 // ---------------- Table service requests ----------------
@@ -591,7 +633,48 @@ app.post('/api/admin/members/:cardNumber/reset-password', auth('admin'), (req, r
   res.json({ ok: true, name: member.name });
 });
 
+// Checks whether it's time to push one of the scheduled reminders (see
+// admin popup notifications) as a real notification to every registered
+// device. Runs once a minute; a `pushLog` entry keyed by date+time keeps
+// this from firing twice even if the server restarts or was asleep and
+// only wakes up later in the day (it still fires as soon as it wakes,
+// since the check is "has this time already passed today", not "is it
+// exactly this minute").
+async function checkAndSendPopupPush(){
+  try{
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const today = now.toISOString().slice(0, 10);
+    const times = [...new Set((db.data.popupNotifications || []).map(p => p.time))];
+    for(const time of times){
+      const [h, m] = time.split(':').map(Number);
+      if(h * 60 + m > nowMinutes) continue;
+      const key = today + '_' + time;
+      if(db.data.pushLog[key]) continue;
+      const group = db.data.popupNotifications.filter(p => p.time === time);
+      const pick = group[Math.floor(Math.random() * group.length)];
+      const allTokens = Object.values(db.data.members).flatMap(m => m.pushTokens || []);
+      if(allTokens.length){
+        const { invalidTokens } = await push.sendToTokens(allTokens, { title: 'The Kaya Lounge', body: pick.message });
+        if(invalidTokens.length){
+          const invalidSet = new Set(invalidTokens);
+          Object.values(db.data.members).forEach(m => {
+            if(m.pushTokens) m.pushTokens = m.pushTokens.filter(t => !invalidSet.has(t));
+          });
+        }
+      }
+      db.data.pushLog[key] = true;
+      db.save();
+    }
+  }catch(err){
+    console.error('Push scheduler error:', err.message);
+  }
+}
+
 db.ready().then(() => {
+  checkAndSendPopupPush();
+  setInterval(checkAndSendPopupPush, 60 * 1000);
+
   app.listen(config.PORT, () => {
     const url = `http://localhost:${config.PORT}`;
     console.log(`Kaya Lounge server running at ${url}`);

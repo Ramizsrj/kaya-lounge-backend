@@ -59,7 +59,13 @@ function defaultData(){
       { id: 1, time: '12:00', message: "Psst — it's 12pm and you're already one of our favourite people today. No big deal, just facts. 😎" },
       { id: 2, time: '16:00', message: "The evening's calling, and honestly, so are we. Come unwind at Kaya Lounge — good food, smooth shisha, and the vibe you've been needing all day." }
     ],
-    nextPopupId: 3
+    nextPopupId: 3,
+
+    // Tracks which scheduled popups have already been pushed as a real
+    // notification today, keyed by "YYYY-MM-DD_HH:MM", so a Render restart
+    // or the keep-alive ping waking the server back up doesn't cause the
+    // same reminder to be sent twice in one day.
+    pushLog: {}
   };
 }
 
@@ -79,6 +85,7 @@ function withDefaults(stored){
   if(merged.announcement===undefined) merged.announcement = null;
   if(!merged.popupNotifications) merged.popupNotifications = dd.popupNotifications;
   if(!merged.nextPopupId) merged.nextPopupId = dd.nextPopupId;
+  if(!merged.pushLog) merged.pushLog = {};
   return merged;
 }
 
