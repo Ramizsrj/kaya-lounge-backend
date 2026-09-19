@@ -26,8 +26,9 @@
     .phone { width: 100%; border-radius: 0; border: none; box-shadow: none; min-height: 100vh; min-height: 100dvh;
       padding-top: max(16px, env(safe-area-inset-top)); padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   }
-  input { width: 100%; background: #f7f0e4; border: 1px solid #e6dbc8; border-radius: 10px; padding: 12px;
-    color: #2a1c10; font-size: 15px; margin-bottom: 10px; }
+  input, textarea { width: 100%; background: #f7f0e4; border: 1px solid #e6dbc8; border-radius: 10px; padding: 12px;
+    color: #2a1c10; font-size: 15px; margin-bottom: 10px; font-family: inherit; }
+  textarea { resize: vertical; min-height: 64px; }
   button, a.btn { cursor: pointer; border: none; font-family: inherit; text-decoration: none; display: block; }
   .label { color: #8a7562; font-size: 12px; margin: 10px 0 6px; }
   @keyframes kayaPulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
@@ -48,7 +49,7 @@
       radial-gradient(ellipse 500px 500px at 50% 30%, rgba(217,180,106,0.10), transparent 65%),
       linear-gradient(180deg, var(--kl-bg-1) 0%, var(--kl-bg-0) 55%, #070502 100%);
   }
-  .kl-screen-content{ position:relative; z-index:2; flex:1; display:flex; flex-direction:column; }
+  .kl-screen-content{ position:relative; z-index:2; flex:1; display:flex; flex-direction:column; padding-top:28px; }
   .kl-light-source{
     position:absolute; top:-8px; left:50%; width:40px;height:40px; transform:translateX(-50%);
     border-radius:50%;
@@ -77,6 +78,8 @@
     100%{opacity:0; transform:translateY(-230px) translateX(var(--sx,14px)) scale(1.6) rotate(var(--sr,6deg));}
   }
   .kl-mote{ position:absolute; border-radius:50%; background:var(--kl-gold-bright); opacity:0; filter:blur(0.3px); animation:klMoteFloat linear infinite; }
+  .kl-sparkle{ position:absolute; width:3px; height:3px; border-radius:50%; background:#fff8e6; box-shadow:0 0 7px 2px rgba(255,244,214,0.95); opacity:0; animation:klTwinkle ease-in-out infinite; pointer-events:none; }
+  @keyframes klTwinkle{ 0%,100%{opacity:0; transform:scale(0.3);} 50%{opacity:1; transform:scale(1.5);} }
   @keyframes klMoteFloat{ 0%{opacity:0; transform:translate(0,0);} 10%{opacity:0.7;} 90%{opacity:0.4;} 100%{opacity:0; transform:translate(var(--dx,10px),-140px);} }
   .kl-content{ position:relative; z-index:2; flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px 24px; text-align:center; }
   .kl-badge-wrap{ position:relative; width:112px; height:112px; margin-bottom:26px; opacity:0; transform:scale(0.75); animation:klBadgeIn 1s cubic-bezier(.2,.7,.3,1) forwards 0.15s; }
@@ -137,6 +140,8 @@
     }
   }
 </style>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-messaging-compat.js"></script>
 </head>
 <body>
 <div class="phone"><div id="screen"></div></div>
@@ -174,6 +179,9 @@ let state={
   menuCategories:[], menuItems:[], currentCategory:'',
   cart:[], promoCode:'', promoError:'', orderNotes:'',
   orderError:'', lastOrder:null, myOrders:[], ratingBusy:null,
+  ratingDraftOrderId:null, ratingDraftStars:0, ratingDraftFeedback:'',
+  staffReviews:[], adminReviews:[],
+  lastKnownOrderCount:-1, lastKnownServiceCount:-1,
   serviceBusy:'', serviceMsg:'',
   staffOrders:[], staffServiceRequests:[], pendingServiceCount:0, pendingOrderCount:0
 };
@@ -286,6 +294,67 @@ function checkPopups(){
   }
 }
 
+// Real (lock-screen / notification-tray) push notifications, on top of the
+// in-app popup above. Runs once after login/signup — asks permission, gets
+// a device token from Firebase, and hands it to the backend so the daily
+// 12pm/4pm reminders (and anything else added later) can reach the phone
+// even when the app isn't open. Silently does nothing if permission is
+// denied or push isn't supported — the in-app popup still works either way.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCgkCYOnlmSeVkzcfBkcUnOjKnZ0FV5OLw",
+  authDomain: "kaya-lounge.firebaseapp.com",
+  projectId: "kaya-lounge",
+  storageBucket: "kaya-lounge.firebasestorage.app",
+  messagingSenderId: "636522772592",
+  appId: "1:636522772592:web:a9bd6dd7451dec22f9dcb5"
+};
+const FIREBASE_VAPID_KEY = "BDNGSxgDVbq0Od0-sJ0hEy40PuCU4CHxsG110797mvxb2l1ZTEQ1PovHXfAV_6j8YcV-gIt6JUSBqOTIZp_tmpY";
+
+async function registerForPushNotifications(){
+  const token = localStorage.getItem('kayaCustomerToken');
+  if(!token) return;
+  try{
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+    if(isNative){
+      await registerNativePush(token);
+    }else{
+      await registerWebPush(token);
+    }
+  }catch(e){ console.warn('Push registration skipped:', e.message); }
+}
+
+async function registerNativePush(authToken){
+  const plugins = window.Capacitor && window.Capacitor.Plugins;
+  const PushNotifications = plugins && plugins.PushNotifications;
+  if(!PushNotifications) return;
+  const perm = await PushNotifications.checkPermissions();
+  let status = perm.receive;
+  if(status !== 'granted'){
+    const req = await PushNotifications.requestPermissions();
+    status = req.receive;
+  }
+  if(status !== 'granted') return;
+  await PushNotifications.addListener('registration', (tokenObj) => {
+    api('/api/customer/register-push', 'POST', { token: tokenObj.value }, authToken).catch(()=>{});
+  });
+  await PushNotifications.addListener('registrationError', (err) => {
+    console.warn('Push registration error', err);
+  });
+  await PushNotifications.register();
+}
+
+async function registerWebPush(authToken){
+  if(!('Notification' in window) || !('serviceWorker' in navigator) || typeof firebase === 'undefined') return;
+  if(Notification.permission === 'denied') return;
+  const permission = await Notification.requestPermission();
+  if(permission !== 'granted') return;
+  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+  if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  const messaging = firebase.messaging();
+  const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: registration });
+  if(fcmToken) await api('/api/customer/register-push', 'POST', { token: fcmToken }, authToken);
+}
+
 async function loadMenu(){
   try{ state.menuItems = await api('/api/menu'); }
   catch(e){ state.menuItems=[]; }
@@ -326,23 +395,52 @@ let suppressHistoryPush=false;
 // every staff screen automatically — staff shouldn't have to remember to
 // check the Service requests / Live orders pages. Stays red until the item
 // is actually acknowledged (order moved past "placed", or request marked done).
+// Two short beeps via the Web Audio API — no sound file needed, and it
+// works the same in the browser and the Android app.
+function playAlertSound(){
+  try{
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    [880, 1046].forEach((freq, i) => {
+      setTimeout(() => {
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine'; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.4);
+      }, i * 180);
+    });
+  }catch(e){ /* audio not available — the visual red alert still shows */ }
+}
+
 let staffAlertPollTimer=null;
 async function pollStaffAlerts(){
   if(!state.staffToken) return;
   try{
     const reqs=await api('/api/staff/service','GET',null,state.staffToken);
-    state.pendingServiceCount=reqs.length;
+    const newCount=reqs.length;
+    if(state.lastKnownServiceCount>=0 && newCount>state.lastKnownServiceCount) playAlertSound();
+    state.lastKnownServiceCount=newCount;
+    state.pendingServiceCount=newCount;
     state.staffServiceRequests=reqs;
   }catch(e){ /* ignore transient errors while polling */ }
   try{
     const orders=await api('/api/staff/orders','GET',null,state.staffToken);
     state.staffOrders=orders;
-    state.pendingOrderCount=orders.filter(o=>o.status==='placed').length;
+    const newOrderCount=orders.filter(o=>o.status==='placed').length;
+    if(state.lastKnownOrderCount>=0 && newOrderCount>state.lastKnownOrderCount) playAlertSound();
+    state.lastKnownOrderCount=newOrderCount;
+    state.pendingOrderCount=newOrderCount;
   }catch(e){ /* ignore transient errors while polling */ }
   render();
 }
 function startStaffAlertPolling(){
   stopStaffAlertPolling();
+  state.lastKnownServiceCount=-1; state.lastKnownOrderCount=-1;
   pollStaffAlerts();
   staffAlertPollTimer=setInterval(pollStaffAlerts, 6000);
 }
@@ -357,6 +455,9 @@ function render(){
     forgotPassword:renderForgotPassword, resetPassword:renderResetPassword, wallet:renderWallet, added:renderAdded,
     staffLogin:renderStaffLogin, staffLookup:renderStaffLookup, staffMember:renderStaffMember, staffRewards:renderStaffRewards,
     adminLogin:renderAdminLogin, adminPanel:renderAdminPanel,
+    adminStaff:renderAdminStaff, adminPasswordReset:renderAdminPasswordReset, adminAnnouncements:renderAdminAnnouncements,
+    adminPopups:renderAdminPopups, adminMenu:renderAdminMenu, adminActivity:renderAdminActivity, adminReviews:renderAdminReviews,
+    staffReviews:renderStaffReviews,
     tableEntry:renderTableEntry, menu:renderMenu, category:renderCategory, cart:renderCart, checkout:renderCheckout,
     orderPlaced:renderOrderPlaced, myOrders:renderMyOrders,
     staffOrders:renderStaffOrders, staffService:renderStaffService };
@@ -617,10 +718,11 @@ function renderStaffLookup(){
     <input id="cardNumberInput" placeholder="e.g. KY-0001" style="text-transform:uppercase" />
     ${state.lookupError ? `<p style="color:${theme.ruby};font-size:11px;margin:-4px 0 10px">${state.lookupError}</p>` : ''}
     <button id="lookupSubmit" style="width:100%;background:${theme.ruby};border-radius:12px;padding:14px;color:${theme.bg};font-weight:700;font-size:14px;margin-top:6px">Look Up</button>
-    <div style="display:flex;justify-content:center;gap:16px;margin-top:22px">
+    <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:22px">
       <a id="manageRewards" class="btn" style="color:${theme.textDim};font-size:11px">Manage reward tiers →</a>
       <a id="goToStaffOrders" class="btn" style="color:${ordersRed?'#e23c3c':theme.textDim};font-weight:${ordersRed?'800':'400'};font-size:11px">Live orders${ordersRed?' ('+state.pendingOrderCount+')':''} →</a>
       <a id="goToStaffService" class="btn" style="color:${serviceRed?'#e23c3c':theme.textDim};font-weight:${serviceRed?'800':'400'};font-size:11px">Service requests${serviceRed?' ('+state.pendingServiceCount+')':''} →</a>
+      <a id="goToStaffReviews" class="btn" style="color:${theme.textDim};font-size:11px">Reviews →</a>
     </div>
   </div>`;
 }
@@ -702,55 +804,11 @@ function renderAdminPanel(){
     <div style="display:flex;justify-content:space-between;font-size:11px;color:${theme.textDim};padding:7px 0;border-bottom:1px solid ${theme.border}">
       <span style="color:${theme.text}">${s.name}</span><span>${s.scans} scans · ${s.stamps} stamps · ${s.redemptions} rewards</span>
     </div>`).join('');
-  const staffAccessRows = (state.staffList || []).map(s=>{
-    const isResetting = state.resetPinFor === s.name;
-    return `
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:8px">
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${s.name}</p>
-        <div style="display:flex;gap:8px">
-          <button data-reset-pin-toggle="${s.name}" style="background:transparent;border:1px solid ${theme.teal};color:${theme.teal};border-radius:8px;padding:6px 10px;font-size:11px">Reset PIN</button>
-          <button data-remove-staff="${s.name}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px">Remove</button>
-        </div>
-      </div>
-      ${isResetting ? `
-        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-          <input id="resetPinInput" type="password" inputmode="numeric" maxlength="4" placeholder="New PIN" style="margin:0" value="${state.resetPinValue}" />
-          <button data-confirm-reset-pin="${s.name}" style="background:${theme.teal};border-radius:8px;padding:9px 12px;color:${theme.bg};font-weight:700;font-size:11px;white-space:nowrap">Save</button>
-        </div>
-        ${state.resetPinError?`<p style="color:${theme.ruby};font-size:11px;margin:6px 0 0">${state.resetPinError}</p>`:''}
-      `:''}
+  const menuItem = (icon, label, id, badge) => `
+    <div id="${id}" class="btn" style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:14px 16px;margin-bottom:10px">
+      <span style="color:${theme.text};font-size:14px;font-weight:700">${icon} ${label}</span>
+      <span style="color:${badge?theme.gold:theme.textDim};font-size:${badge?'11px':'16px'};font-weight:${badge?'700':'400'}">${badge || '›'}</span>
     </div>`;
-  }).join('');
-  const menuRows = (state.adminMenuItems || []).map(m=>`
-    <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:8px;opacity:${m.available?1:0.5}">
-      <div>
-        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${m.name} <span style="color:${theme.textDim};font-weight:400">· Rs ${m.price}</span></p>
-        <p style="color:${theme.textDim};font-size:10px;margin:2px 0 0">${m.category}${m.available?'':' · unavailable'}</p>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button data-toggle-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.teal};color:${theme.teal};border-radius:8px;padding:6px 10px;font-size:11px;white-space:nowrap">${m.available?'Hide':'Show'}</button>
-        <button data-remove-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px">Remove</button>
-      </div>
-    </div>`).join('');
-  const popupsByTime = {};
-  (state.popups || []).slice().sort((a,b)=>a.time.localeCompare(b.time)).forEach(p=>{
-    (popupsByTime[p.time] = popupsByTime[p.time] || []).push(p);
-  });
-  const popupRows = Object.keys(popupsByTime).map(time=>`
-    <div style="margin-bottom:10px">
-      <p style="color:${theme.teal};font-size:11px;font-weight:700;margin:0 0 6px">${time}</p>
-      ${popupsByTime[time].map(p=>`
-        <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:6px;gap:10px">
-          <p style="color:${theme.text};font-size:12px;margin:0;flex:1">${p.message}</p>
-          <button data-remove-popup="${p.id}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px;white-space:nowrap">Remove</button>
-        </div>`).join('')}
-    </div>`).join('');
-  const logRows = stats.activity.map(a=>`
-    <div style="text-align:left;font-size:11px;color:${theme.textDim};padding:8px 0;border-bottom:1px solid ${theme.border}">
-      <span style="color:${theme.text}">${actionLabel(a.action)}</span> — ${a.memberName||'?'} (${a.cardNumber||'—'}) <span style="color:${theme.teal}">by ${a.staffName||'—'}</span>${a.detail?` · ${a.detail}`:''}
-      <div style="font-size:10px;margin-top:2px">${new Date(a.ts).toLocaleString()}</div>
-    </div>`).join('');
   return `<div style="padding:18px 4px 4px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <p style="color:${theme.ruby};font-size:11px;letter-spacing:2px;text-transform:uppercase;margin:0">Admin Dashboard</p>
@@ -775,9 +833,50 @@ function renderAdminPanel(){
       </div>
     </div>
     ${staffRows ? `<p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 8px">By staff member</p><div style="margin-bottom:16px">${staffRows}</div>` : ''}
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Staff access</p>
+    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Manage</p>
+    ${menuItem('👥','Staff access','goToAdminStaff')}
+    ${menuItem('🔑','Reset customer password','goToAdminPasswordReset')}
+    ${menuItem('📣','Announcements','goToAdminAnnouncements', state.announcement ? '● live' : '')}
+    ${menuItem('⏰','Scheduled popups','goToAdminPopups')}
+    ${menuItem('🍽️','Menu items','goToAdminMenu')}
+    ${menuItem('⭐','Customer reviews','goToAdminReviews')}
+    ${menuItem('📋','Activity log','goToAdminActivity')}
+  </div>`;
+}
+
+function adminSectionHeader(title){
+  return `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <a id="backToAdminHub" class="btn" style="color:${theme.textDim};font-size:11px">← Back</a>
+      <p style="color:${theme.gold};font-size:15px;font-weight:700;margin:0">${title}</p>
+      <a id="adminLogout" class="btn" style="color:${theme.textDim};font-size:11px">Log out</a>
+    </div>`;
+}
+
+function renderAdminStaff(){
+  const staffAccessRows = (state.staffList || []).map(s=>{
+    const isResetting = state.resetPinFor === s.name;
+    return `
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${s.name}</p>
+        <div style="display:flex;gap:8px">
+          <button data-reset-pin-toggle="${s.name}" style="background:transparent;border:1px solid ${theme.teal};color:${theme.teal};border-radius:8px;padding:6px 10px;font-size:11px">Reset PIN</button>
+          <button data-remove-staff="${s.name}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px">Remove</button>
+        </div>
+      </div>
+      ${isResetting ? `
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <input id="resetPinInput" type="password" inputmode="numeric" maxlength="4" placeholder="New PIN" style="margin:0" value="${state.resetPinValue}" />
+          <button data-confirm-reset-pin="${s.name}" style="background:${theme.teal};border-radius:8px;padding:9px 12px;color:${theme.bg};font-weight:700;font-size:11px;white-space:nowrap">Save</button>
+        </div>
+        ${state.resetPinError?`<p style="color:${theme.ruby};font-size:11px;margin:6px 0 0">${state.resetPinError}</p>`:''}
+      `:''}
+    </div>`;
+  }).join('');
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Staff access')}
     ${staffAccessRows || `<p style="color:${theme.textDim};font-size:11px;text-align:center;margin:0 0 10px">No staff accounts yet</p>`}
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-top:6px;margin-bottom:16px;text-align:left">
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-top:6px;text-align:left">
       <div class="label" style="margin-top:0">Staff name</div>
       <input id="newStaffName" placeholder="e.g. Hina" />
       <div class="label">PIN</div>
@@ -785,8 +884,13 @@ function renderAdminPanel(){
       ${state.staffAdminError ? `<p style="color:${theme.ruby};font-size:11px;margin:6px 0 0">${state.staffAdminError}</p>` : ''}
       <button id="addStaffMember" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px;margin-top:8px">+ Add staff member</button>
     </div>
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Reset a customer's password</p>
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-bottom:16px;text-align:left">
+  </div>`;
+}
+
+function renderAdminPasswordReset(){
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader("Reset a customer's password")}
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;text-align:left">
       <div class="label" style="margin-top:0">Card number</div>
       <input id="resetPwCardInput" placeholder="e.g. KY-0001" style="text-transform:uppercase" value="${state.resetPwCard}" />
       <div class="label">New password</div>
@@ -795,8 +899,13 @@ function renderAdminPanel(){
       ${state.resetPwMsg ? `<p style="color:${theme.teal};font-size:11px;margin:6px 0 0">${state.resetPwMsg}</p>` : ''}
       <button id="resetPwSubmit" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px;margin-top:8px">Reset password</button>
     </div>
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Send announcement to customers</p>
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-bottom:16px;text-align:left">
+  </div>`;
+}
+
+function renderAdminAnnouncements(){
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Announcements')}
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;text-align:left">
       ${state.announcement ? `
         <div style="background:${theme.bg};border:1px solid ${theme.gold};border-radius:8px;padding:10px;margin-bottom:10px">
           <p style="color:${theme.textDim};font-size:10px;margin:0 0 4px">Currently live to all customers:</p>
@@ -810,8 +919,26 @@ function renderAdminPanel(){
       ${state.announcementAdminMsg ? `<p style="color:${theme.teal};font-size:11px;margin:0 0 8px">${state.announcementAdminMsg}</p>` : ''}
       <button id="sendAnnouncement" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px">Send to all customers</button>
     </div>
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Scheduled popup reminders</p>
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-bottom:16px;text-align:left">
+  </div>`;
+}
+
+function renderAdminPopups(){
+  const popupsByTime = {};
+  (state.popups || []).slice().sort((a,b)=>a.time.localeCompare(b.time)).forEach(p=>{
+    (popupsByTime[p.time] = popupsByTime[p.time] || []).push(p);
+  });
+  const popupRows = Object.keys(popupsByTime).map(time=>`
+    <div style="margin-bottom:10px">
+      <p style="color:${theme.teal};font-size:11px;font-weight:700;margin:0 0 6px">${time}</p>
+      ${popupsByTime[time].map(p=>`
+        <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:6px;gap:10px">
+          <p style="color:${theme.text};font-size:12px;margin:0;flex:1">${p.message}</p>
+          <button data-remove-popup="${p.id}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px;white-space:nowrap">Remove</button>
+        </div>`).join('')}
+    </div>`).join('');
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Scheduled popup reminders')}
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;text-align:left">
       ${popupRows || `<p style="color:${theme.textDim};font-size:11px;margin:0 0 10px">No scheduled popups yet</p>`}
       <div class="label" style="margin-top:6px">Time</div>
       <input id="newPopupTime" type="time" value="${state.newPopupTime}" />
@@ -820,9 +947,25 @@ function renderAdminPanel(){
       ${state.popupAdminError ? `<p style="color:${theme.ruby};font-size:11px;margin:0 0 8px">${state.popupAdminError}</p>` : ''}
       <button id="addPopup" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px">+ Add scheduled popup</button>
     </div>
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 10px">Menu items</p>
+  </div>`;
+}
+
+function renderAdminMenu(){
+  const menuRows = (state.adminMenuItems || []).map(m=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:9px 12px;margin-bottom:8px;opacity:${m.available?1:0.5}">
+      <div>
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${m.name} <span style="color:${theme.textDim};font-weight:400">· Rs ${m.price}</span></p>
+        <p style="color:${theme.textDim};font-size:10px;margin:2px 0 0">${m.category}${m.available?'':' · unavailable'}</p>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button data-toggle-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.teal};color:${theme.teal};border-radius:8px;padding:6px 10px;font-size:11px;white-space:nowrap">${m.available?'Hide':'Show'}</button>
+        <button data-remove-menu-item="${m.id}" style="background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:8px;padding:6px 10px;font-size:11px">Remove</button>
+      </div>
+    </div>`).join('');
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Menu items')}
     ${menuRows || `<p style="color:${theme.textDim};font-size:11px;text-align:center;margin:0 0 10px">No menu items yet</p>`}
-    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-top:6px;margin-bottom:16px;text-align:left">
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:12px;margin-top:6px;text-align:left">
       <div class="label" style="margin-top:0">Item name</div>
       <input id="newMenuName" placeholder="e.g. Nutella Waffle" value="${state.newMenuName}" />
       <div class="label">Description (optional)</div>
@@ -838,8 +981,19 @@ function renderAdminPanel(){
       ${state.menuAdminError ? `<p style="color:${theme.ruby};font-size:11px;margin:0 0 8px">${state.menuAdminError}</p>` : ''}
       <button id="addMenuItem" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px">+ Add menu item</button>
     </div>
-    <p style="color:${theme.gold};font-size:12px;font-weight:700;text-align:left;margin:0 0 8px">Recent activity</p>
-    <div style="max-height:220px;overflow-y:auto">${logRows || `<p style="color:${theme.textDim};font-size:11px">No activity yet</p>`}</div>
+  </div>`;
+}
+
+function renderAdminActivity(){
+  const stats = state.adminStats || { activity:[] };
+  const logRows = stats.activity.map(a=>`
+    <div style="text-align:left;font-size:11px;color:${theme.textDim};padding:8px 0;border-bottom:1px solid ${theme.border}">
+      <span style="color:${theme.text}">${actionLabel(a.action)}</span> — ${a.memberName||'?'} (${a.cardNumber||'—'}) <span style="color:${theme.teal}">by ${a.staffName||'—'}</span>${a.detail?` · ${a.detail}`:''}
+      <div style="font-size:10px;margin-top:2px">${new Date(a.ts).toLocaleString()}</div>
+    </div>`).join('');
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Activity log')}
+    <div>${logRows || `<p style="color:${theme.textDim};font-size:11px">No activity yet</p>`}</div>
   </div>`;
 }
 
@@ -965,9 +1119,21 @@ function renderMyOrders(){
   const rows = state.myOrders.map(o=>{
     const itemsLine = o.items.map(i=>`${i.quantity}× ${i.name}`).join(', ');
     const canRate = o.status==='served' && !o.rating;
-    const stars = canRate
-      ? `<div style="margin-top:8px">${[1,2,3,4,5].map(n=>`<span data-rate="${o.id}:${n}" class="btn" style="font-size:16px;margin-right:2px;color:${theme.gold}">★</span>`).join('')}</div>`
-      : (o.rating?`<p style="color:${theme.gold};font-size:11px;margin:6px 0 0">Rated ${'★'.repeat(o.rating)}</p>`:'');
+    const isDrafting = state.ratingDraftOrderId===o.id;
+    let stars;
+    if(o.rating){
+      stars = `<p style="color:${theme.gold};font-size:11px;margin:6px 0 0">Rated ${'★'.repeat(o.rating)}${o.feedback?` — "${o.feedback}"`:''}</p>`;
+    }else if(canRate && isDrafting){
+      stars = `<div style="margin-top:8px;text-align:left">
+        <div style="margin-bottom:6px">${[1,2,3,4,5].map(n=>`<span data-rate-star="${o.id}:${n}" class="btn" style="font-size:20px;margin-right:2px;color:${n<=state.ratingDraftStars?theme.gold:theme.border}">★</span>`).join('')}</div>
+        <textarea id="ratingFeedbackInput" placeholder="Any advice or complaint? (optional)" style="min-height:56px;font-size:13px">${state.ratingDraftFeedback}</textarea>
+        <button data-submit-rating="${o.id}" style="width:100%;background:${theme.ruby};border-radius:10px;padding:10px;color:${theme.bg};font-weight:700;font-size:12px" ${state.ratingBusy===o.id?'disabled':''}>${state.ratingBusy===o.id?'Submitting…':'Submit review'}</button>
+      </div>`;
+    }else if(canRate){
+      stars = `<div style="margin-top:8px">${[1,2,3,4,5].map(n=>`<span data-rate-star="${o.id}:${n}" class="btn" style="font-size:16px;margin-right:2px;color:${theme.gold}">★</span>`).join('')}</div>`;
+    }else{
+      stars = '';
+    }
     return `<div style="background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:12px;margin-bottom:10px;text-align:left">
       <div style="display:flex;justify-content:space-between">
         <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">Order #${o.id}</p>
@@ -1037,6 +1203,29 @@ function renderStaffService(){
   </div>`;
 }
 
+function renderReviewsList(reviews, backId){
+  const rows = reviews.map(r=>`
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:12px;margin-bottom:10px;text-align:left">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${r.memberName} · #${r.orderId}</p>
+        <p style="color:${theme.gold};font-size:13px;margin:0">${'★'.repeat(r.rating)}${'☆'.repeat(5-r.rating)}</p>
+      </div>
+      <p style="color:${theme.textDim};font-size:11px;margin:6px 0 0">${r.items}${r.tableNumber?' · Table '+r.tableNumber:''}</p>
+      ${r.feedback?`<p style="color:${theme.text};font-size:12px;margin:8px 0 0;font-style:italic">"${r.feedback}"</p>`:''}
+      <p style="color:${theme.textDim};font-size:10px;margin:8px 0 0">${new Date(r.createdAt).toLocaleString()}</p>
+    </div>`).join('');
+  return `<div style="padding:18px 4px 4px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <a id="${backId}" class="btn" style="color:${theme.textDim};font-size:11px">← Back</a>
+      <p style="color:${theme.gold};font-size:15px;font-weight:700;margin:0">Customer reviews</p>
+      <span style="width:30px"></span>
+    </div>
+    ${rows || `<p style="color:${theme.textDim};font-size:12px;text-align:center;margin-top:30px">No reviews yet.</p>`}
+  </div>`;
+}
+function renderStaffReviews(){ return renderReviewsList(state.staffReviews, 'backToLookupFromReviews'); }
+function renderAdminReviews(){ return renderReviewsList(state.adminReviews, 'backToAdminHubFromReviews'); }
+
 function bind(){
   const q=id=>document.getElementById(id);
 
@@ -1085,6 +1274,17 @@ function bind(){
       m.style.setProperty('--dx',(Math.random()*40-20)+'px');
       klStage.appendChild(m);
     }
+    if(state.step==='landing'){
+      for(let i=0;i<7;i++){
+        const s=document.createElement('div');
+        s.className='kl-sparkle';
+        s.style.left=(28+Math.random()*44)+'%';
+        s.style.top=(6+Math.random()*26)+'%';
+        s.style.animationDuration=(2.6+Math.random()*2.2)+'s';
+        s.style.animationDelay=(2.5+Math.random()*6)+'s';
+        klStage.appendChild(s);
+      }
+    }
   }
 
   if(q('startSignup')) q('startSignup').onclick=()=>{state.signupError='';state.step='signup';render();};
@@ -1113,7 +1313,7 @@ function bind(){
       const res=await api('/api/customer/login','POST',{identifier,password});
       localStorage.setItem('kayaCustomerToken', res.token);
       state.member=res.member; state.loginError=''; state.step='wallet';
-      startPopupChecking();
+      startPopupChecking(); registerForPushNotifications();
     }catch(err){
       if(err.data && err.data.needsVerification){
         state.pendingCardNumber=err.data.cardNumber; state.pendingEmail='';
@@ -1140,7 +1340,7 @@ function bind(){
       const res=await api('/api/customer/verify-email','POST',{cardNumber:state.pendingCardNumber, code});
       localStorage.setItem('kayaCustomerToken', res.token);
       state.member=res.member; state.step='wallet';
-      startPopupChecking();
+      startPopupChecking(); registerForPushNotifications();
     }catch(err){ state.verifyError=err.message; }
     state.verifyBusy=false;
     render();
@@ -1307,13 +1507,21 @@ function bind(){
   if(q('backToWalletFromPlaced')) q('backToWalletFromPlaced').onclick=()=>{state.step='wallet';render();};
 
   if(q('backToWalletFromOrders')) q('backToWalletFromOrders').onclick=()=>{state.step='wallet';render();};
-  document.querySelectorAll('[data-rate]').forEach(el=>{
+  document.querySelectorAll('[data-rate-star]').forEach(el=>{
+    el.onclick=()=>{
+      const [orderId,n]=el.dataset.rateStar.split(':').map(Number);
+      state.ratingDraftOrderId=orderId; state.ratingDraftStars=n; state.ratingDraftFeedback='';
+      render();
+    };
+  });
+  if(q('ratingFeedbackInput')) q('ratingFeedbackInput').oninput=(e)=>{ state.ratingDraftFeedback=e.target.value; };
+  document.querySelectorAll('[data-submit-rating]').forEach(el=>{
     el.onclick=async ()=>{
-      const [orderId,n]=el.dataset.rate.split(':').map(Number);
+      const orderId=Number(el.dataset.submitRating);
       state.ratingBusy=orderId; render();
       const token=localStorage.getItem('kayaCustomerToken');
-      try{ await api('/api/orders/'+orderId+'/rating','POST',{rating:n},token); }catch(e){}
-      state.ratingBusy=null;
+      try{ await api('/api/orders/'+orderId+'/rating','POST',{rating:state.ratingDraftStars, feedback:state.ratingDraftFeedback},token); }catch(e){}
+      state.ratingBusy=null; state.ratingDraftOrderId=null; state.ratingDraftStars=0; state.ratingDraftFeedback='';
       await loadMyOrders(); render();
     };
   });
@@ -1330,6 +1538,12 @@ function bind(){
   };
   if(q('backToLookupFromOrders')) q('backToLookupFromOrders').onclick=()=>{state.step='staffLookup';render();};
   if(q('backToLookupFromService')) q('backToLookupFromService').onclick=()=>{state.step='staffLookup';render();};
+  if(q('goToStaffReviews')) q('goToStaffReviews').onclick=async ()=>{
+    state.step='staffReviews'; render();
+    try{ state.staffReviews=await api('/api/staff/reviews','GET',null,state.staffToken); }catch(e){}
+    render();
+  };
+  if(q('backToLookupFromReviews')) q('backToLookupFromReviews').onclick=()=>{state.step='staffLookup';render();};
   document.querySelectorAll('[data-advance-order]').forEach(btn=>{
     btn.onclick=async ()=>{
       const [id,status]=btn.dataset.advanceOrder.split(':');
@@ -1437,6 +1651,19 @@ function bind(){
   if(q('adminLogout')) q('adminLogout').onclick=()=>{
     localStorage.removeItem('kayaAdminToken');
     state.adminToken=null; state.step='landing'; render();
+  };
+  if(q('backToAdminHub')) q('backToAdminHub').onclick=()=>{state.step='adminPanel';render();};
+  if(q('backToAdminHubFromReviews')) q('backToAdminHubFromReviews').onclick=()=>{state.step='adminPanel';render();};
+  if(q('goToAdminStaff')) q('goToAdminStaff').onclick=()=>{state.step='adminStaff';render();};
+  if(q('goToAdminPasswordReset')) q('goToAdminPasswordReset').onclick=()=>{state.step='adminPasswordReset';render();};
+  if(q('goToAdminAnnouncements')) q('goToAdminAnnouncements').onclick=()=>{state.step='adminAnnouncements';render();};
+  if(q('goToAdminPopups')) q('goToAdminPopups').onclick=()=>{state.step='adminPopups';render();};
+  if(q('goToAdminMenu')) q('goToAdminMenu').onclick=()=>{state.step='adminMenu';render();};
+  if(q('goToAdminActivity')) q('goToAdminActivity').onclick=()=>{state.step='adminActivity';render();};
+  if(q('goToAdminReviews')) q('goToAdminReviews').onclick=async ()=>{
+    state.step='adminReviews'; render();
+    try{ state.adminReviews=await api('/api/admin/reviews','GET',null,state.adminToken); }catch(e){}
+    render();
   };
 
   if(q('addStaffMember')) q('addStaffMember').onclick=async ()=>{
@@ -1577,7 +1804,7 @@ async function init(){
     try{
       const res=await api('/api/customer/me','GET',null,custToken);
       state.member=res.member; state.step='wallet';
-      startPopupChecking();
+      startPopupChecking(); registerForPushNotifications();
     }catch(e){ localStorage.removeItem('kayaCustomerToken'); }
   }
 
