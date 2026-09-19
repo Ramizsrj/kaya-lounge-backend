@@ -292,8 +292,28 @@ app.post('/api/orders', auth('customer'), (req, res) => {
   };
   db.data.orders.unshift(order);
   db.save();
+  notifyAllStaff('New order', `Table ${order.tableNumber || '—'} · Rs ${order.total} · ${resolvedItems.length} item(s)`);
   res.status(201).json({ order, message: 'Pay in cash at the counter when your order arrives.' });
 });
+
+// Sends a real (lock-screen) push notification to every staff member's
+// registered device — used for new orders and table service calls, so
+// staff notice even if they've put the phone down and aren't looking at
+// the app right now.
+async function notifyAllStaff(title, body){
+  try{
+    const allTokens = db.data.staff.flatMap(s => s.pushTokens || []);
+    if(!allTokens.length) return;
+    const { invalidTokens } = await push.sendToTokens(allTokens, { title, body });
+    if(invalidTokens.length){
+      const invalidSet = new Set(invalidTokens);
+      db.data.staff.forEach(s => { if(s.pushTokens) s.pushTokens = s.pushTokens.filter(t => !invalidSet.has(t)); });
+      db.save();
+    }
+  }catch(err){
+    console.error('Staff push notify error:', err.message);
+  }
+}
 
 app.get('/api/orders', auth('customer'), (req, res) => {
   const orders = db.data.orders.filter(o => o.cardNumber === req.auth.cardNumber);
@@ -362,6 +382,8 @@ app.post('/api/service', (req, res) => {
   };
   db.data.serviceRequests.unshift(request);
   db.save();
+  const label = type === 'bill' ? 'Bill requested' : 'Waiter called';
+  notifyAllStaff(label, `Table ${request.tableNumber}`);
   res.status(201).json({ ok: true, id: request.id });
 });
 
@@ -375,6 +397,17 @@ app.post('/api/staff/login', (req, res) => {
   if(!found) return res.status(401).json({ error: 'Name or PIN not recognized' });
   const token = sign({ role: 'staff', staffName: found.name });
   res.json({ token, staffName: found.name });
+});
+
+app.post('/api/staff/register-push', auth('staff'), (req, res) => {
+  const staffMember = db.data.staff.find(s => s.name === req.auth.staffName);
+  if(!staffMember) return res.status(404).json({ error: 'Staff account not found' });
+  const token = String((req.body && req.body.token) || '').trim();
+  if(!token) return res.status(400).json({ error: 'A push token is required' });
+  if(!staffMember.pushTokens) staffMember.pushTokens = [];
+  if(!staffMember.pushTokens.includes(token)) staffMember.pushTokens.push(token);
+  db.save();
+  res.json({ ok: true });
 });
 
 app.get('/api/staff/members/:cardNumber', auth('staff'), (req, res) => {
@@ -631,6 +664,16 @@ app.post('/api/admin/members/:cardNumber/reset-password', auth('admin'), (req, r
   logActivity('password_reset', cardNumber, 'admin');
   db.save();
   res.json({ ok: true, name: member.name });
+});
+
+app.delete('/api/admin/members/:cardNumber', auth('admin'), (req, res) => {
+  const cardNumber = req.params.cardNumber.toUpperCase();
+  const member = db.data.members[cardNumber];
+  if(!member) return res.status(404).json({ error: 'No card found with that number' });
+  logActivity('account_deleted', cardNumber, 'admin');
+  delete db.data.members[cardNumber];
+  db.save();
+  res.status(204).end();
 });
 
 // Checks whether it's time to push one of the scheduled reminders (see

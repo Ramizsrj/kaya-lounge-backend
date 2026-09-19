@@ -168,6 +168,7 @@ let state={
   adminToken:null, adminError:'', staffList:[], staffAdminError:'', serverUnreachable:false,
   resetPinFor:'', resetPinValue:'', resetPinError:'',
   resetPwCard:'', resetPwPassword:'', resetPwError:'', resetPwMsg:'',
+  deleteAccountError:'', deleteAccountMsg:'',
   adminMenuItems:[], newMenuName:'', newMenuDesc:'', newMenuPrice:'', newMenuCategory:'Food', menuAdminError:'',
   announcement:null, dismissedAnnouncementTs:parseInt(localStorage.getItem('kayaDismissedAnnouncementTs')||'0',10),
   announcementDraft:'', announcementAdminError:'', announcementAdminMsg:'',
@@ -234,8 +235,16 @@ async function api(path, method, body, token){
   return data;
 }
 
+// Anything a customer typed themselves (name, order notes, table number,
+// review feedback) gets shown back to staff/admin elsewhere in the app —
+// escape it before dropping it into innerHTML so a name or complaint like
+// "<img src=x onerror=...>" can't run as code in a staff/admin's browser.
+function esc(str){
+  return String(str==null?'':str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function actionLabel(a){
-  return {scan:'Card scanned', stamp_added:'Stamp added', stamp_removed:'Stamp removed', reward_redeemed:'Reward redeemed', card_created:'New card created', password_reset:'Password reset'}[a] || a;
+  return {scan:'Card scanned', stamp_added:'Stamp added', stamp_removed:'Stamp removed', reward_redeemed:'Reward redeemed', card_created:'New card created', password_reset:'Password reset', account_deleted:'Account deleted'}[a] || a;
 }
 
 async function loadRewards(){
@@ -316,14 +325,30 @@ async function registerForPushNotifications(){
   try{
     const isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
     if(isNative){
-      await registerNativePush(token);
+      await registerNativePush(token, '/api/customer/register-push');
     }else{
-      await registerWebPush(token);
+      await registerWebPush(token, '/api/customer/register-push');
     }
   }catch(e){ console.warn('Push registration skipped:', e.message); }
 }
 
-async function registerNativePush(authToken){
+// Same real push notifications, but for a staff member's own device — so
+// "new order" / "call waiter" / "request bill" can reach their lock screen
+// even if they've put the phone down, not just show the in-app red banner.
+async function registerForStaffPushNotifications(){
+  const token = state.staffToken;
+  if(!token) return;
+  try{
+    const isNative = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+    if(isNative){
+      await registerNativePush(token, '/api/staff/register-push');
+    }else{
+      await registerWebPush(token, '/api/staff/register-push');
+    }
+  }catch(e){ console.warn('Staff push registration skipped:', e.message); }
+}
+
+async function registerNativePush(authToken, endpoint){
   const plugins = window.Capacitor && window.Capacitor.Plugins;
   const PushNotifications = plugins && plugins.PushNotifications;
   if(!PushNotifications) return;
@@ -335,7 +360,7 @@ async function registerNativePush(authToken){
   }
   if(status !== 'granted') return;
   await PushNotifications.addListener('registration', (tokenObj) => {
-    api('/api/customer/register-push', 'POST', { token: tokenObj.value }, authToken).catch(()=>{});
+    api(endpoint, 'POST', { token: tokenObj.value }, authToken).catch(()=>{});
   });
   await PushNotifications.addListener('registrationError', (err) => {
     console.warn('Push registration error', err);
@@ -343,7 +368,7 @@ async function registerNativePush(authToken){
   await PushNotifications.register();
 }
 
-async function registerWebPush(authToken){
+async function registerWebPush(authToken, endpoint){
   if(!('Notification' in window) || !('serviceWorker' in navigator) || typeof firebase === 'undefined') return;
   if(Notification.permission === 'denied') return;
   const permission = await Notification.requestPermission();
@@ -352,7 +377,7 @@ async function registerWebPush(authToken){
   if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
   const messaging = firebase.messaging();
   const fcmToken = await messaging.getToken({ vapidKey: FIREBASE_VAPID_KEY, serviceWorkerRegistration: registration });
-  if(fcmToken) await api('/api/customer/register-push', 'POST', { token: fcmToken }, authToken);
+  if(fcmToken) await api(endpoint, 'POST', { token: fcmToken }, authToken);
 }
 
 async function loadMenu(){
@@ -490,7 +515,7 @@ function render(){
   const popupOverlay = state.popupToShow ? `
     <div class="kl-popup-overlay">
       <div class="kl-popup-card">
-        <p class="kl-popup-message">${state.popupToShow.message}</p>
+        <p class="kl-popup-message">${esc(state.popupToShow.message)}</p>
         <button id="closePopupNotification" class="kl-popup-close">Got it 👍</button>
       </div>
     </div>` : '';
@@ -656,13 +681,13 @@ function renderWallet(){
   const announcementBanner = showAnnouncement ? `
     <div style="background:${theme.card};border:1px solid ${theme.gold};border-radius:12px;padding:13px 14px;margin-bottom:16px;text-align:left;position:relative">
       <p style="color:${theme.gold};font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px">📣 From The Kaya Lounge</p>
-      <p style="color:${theme.text};font-size:13px;margin:0;line-height:1.5;padding-right:20px">${state.announcement.message}</p>
+      <p style="color:${theme.text};font-size:13px;margin:0;line-height:1.5;padding-right:20px">${esc(state.announcement.message)}</p>
       <a id="dismissAnnouncement" class="btn" style="position:absolute;top:10px;right:12px;color:${theme.textDim};font-size:14px;font-weight:700">✕</a>
     </div>` : '';
   return `<div style="padding:16px 4px 4px;text-align:center">
     ${announcementBanner}
     <p style="color:${theme.gold};font-size:17px;font-weight:700;letter-spacing:1px;margin:0 0 2px">THE KAYA LOUNGE</p>
-    <p style="color:${theme.textDim};font-size:12px;margin:0 0 16px">${member.name} · Card #${member.cardNumber}</p>
+    <p style="color:${theme.textDim};font-size:12px;margin:0 0 16px">${esc(member.name)} · Card #${member.cardNumber}</p>
     <div style="background:#fff;border-radius:12px;padding:10px;display:inline-block;margin-bottom:14px">${renderQr(member.name)}</div>
     <p style="color:${theme.text};font-size:16px;font-weight:700;margin:0 0 2px">${member.visits} / ${member.cycle} stamps</p>
     <div style="margin:8px 0 10px">${coals}</div>
@@ -746,7 +771,7 @@ function renderStaffMember(){
     </div>
     <div style="text-align:center;background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:16px;margin-bottom:16px">
       <p style="color:${theme.textDim};font-size:11px;margin:0 0 2px">Card #${member.cardNumber}</p>
-      <p style="color:${theme.gold};font-size:17px;font-weight:700;margin:0 0 10px">${member.name}</p>
+      <p style="color:${theme.gold};font-size:17px;font-weight:700;margin:0 0 10px">${esc(member.name)}</p>
       <p style="color:${theme.text};font-size:22px;font-weight:700;margin:0 0 4px">${member.visits} <span style="color:${theme.textDim};font-size:12px;font-weight:400">/ ${member.cycle} this cycle</span></p>
       <div style="margin:6px 0 8px">${coals}</div>
       <p style="color:${theme.textDim};font-size:11px;margin:0 0 4px">Total lifetime visits: ${member.totalVisits}</p>
@@ -899,6 +924,13 @@ function renderAdminPasswordReset(){
       ${state.resetPwMsg ? `<p style="color:${theme.teal};font-size:11px;margin:6px 0 0">${state.resetPwMsg}</p>` : ''}
       <button id="resetPwSubmit" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px;margin-top:8px">Reset password</button>
     </div>
+    <div style="background:${theme.card};border:1px solid ${theme.ruby};border-radius:10px;padding:12px;margin-top:16px;text-align:left">
+      <p style="color:${theme.ruby};font-size:12px;font-weight:700;margin:0 0 8px">Danger zone</p>
+      <p style="color:${theme.textDim};font-size:11px;margin:0 0 10px">Permanently deletes the card number entered above — stamps, order history, everything. This cannot be undone.</p>
+      ${state.deleteAccountError ? `<p style="color:${theme.ruby};font-size:11px;margin:0 0 8px">${state.deleteAccountError}</p>` : ''}
+      ${state.deleteAccountMsg ? `<p style="color:${theme.teal};font-size:11px;margin:0 0 8px">${state.deleteAccountMsg}</p>` : ''}
+      <button id="deleteAccountBtn" style="width:100%;background:transparent;border:1px solid ${theme.ruby};color:${theme.ruby};border-radius:10px;padding:11px;font-weight:700;font-size:13px">Delete this customer's account</button>
+    </div>
   </div>`;
 }
 
@@ -988,7 +1020,7 @@ function renderAdminActivity(){
   const stats = state.adminStats || { activity:[] };
   const logRows = stats.activity.map(a=>`
     <div style="text-align:left;font-size:11px;color:${theme.textDim};padding:8px 0;border-bottom:1px solid ${theme.border}">
-      <span style="color:${theme.text}">${actionLabel(a.action)}</span> — ${a.memberName||'?'} (${a.cardNumber||'—'}) <span style="color:${theme.teal}">by ${a.staffName||'—'}</span>${a.detail?` · ${a.detail}`:''}
+      <span style="color:${theme.text}">${actionLabel(a.action)}</span> — ${esc(a.memberName)||'?'} (${a.cardNumber||'—'}) <span style="color:${theme.teal}">by ${esc(a.staffName)||'—'}</span>${a.detail?` · ${esc(a.detail)}`:''}
       <div style="font-size:10px;margin-top:2px">${new Date(a.ts).toLocaleString()}</div>
     </div>`).join('');
   return `<div style="padding:18px 4px 4px">
@@ -1122,7 +1154,7 @@ function renderMyOrders(){
     const isDrafting = state.ratingDraftOrderId===o.id;
     let stars;
     if(o.rating){
-      stars = `<p style="color:${theme.gold};font-size:11px;margin:6px 0 0">Rated ${'★'.repeat(o.rating)}${o.feedback?` — "${o.feedback}"`:''}</p>`;
+      stars = `<p style="color:${theme.gold};font-size:11px;margin:6px 0 0">Rated ${'★'.repeat(o.rating)}${o.feedback?` — "${esc(o.feedback)}"`:''}</p>`;
     }else if(canRate && isDrafting){
       stars = `<div style="margin-top:8px;text-align:left">
         <div style="margin-bottom:6px">${[1,2,3,4,5].map(n=>`<span data-rate-star="${o.id}:${n}" class="btn" style="font-size:20px;margin-right:2px;color:${n<=state.ratingDraftStars?theme.gold:theme.border}">★</span>`).join('')}</div>
@@ -1139,8 +1171,8 @@ function renderMyOrders(){
         <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">Order #${o.id}</p>
         <p style="color:${theme.teal};font-size:11px;font-weight:700;margin:0">${statusLabel[o.status]||o.status}</p>
       </div>
-      <p style="color:${theme.textDim};font-size:11px;margin:6px 0 0">${itemsLine}</p>
-      <p style="color:${theme.text};font-size:12px;font-weight:700;margin:6px 0 0">Rs ${o.total}${o.tableNumber?' · Table '+o.tableNumber:''}</p>
+      <p style="color:${theme.textDim};font-size:11px;margin:6px 0 0">${esc(itemsLine)}</p>
+      <p style="color:${theme.text};font-size:12px;font-weight:700;margin:6px 0 0">Rs ${o.total}${o.tableNumber?' · Table '+esc(o.tableNumber):''}</p>
       ${stars}
     </div>`;
   }).join('');
@@ -1161,11 +1193,11 @@ function renderStaffOrders(){
     const itemsLine = o.items.map(i=>`${i.quantity}× ${i.name}`).join(', ');
     return `<div style="background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:12px;margin-bottom:10px;text-align:left">
       <div style="display:flex;justify-content:space-between">
-        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">#${o.id} · Table ${o.tableNumber||'—'}</p>
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">#${o.id} · Table ${esc(o.tableNumber)||'—'}</p>
         <p style="color:${theme.teal};font-size:11px;font-weight:700;margin:0;text-transform:capitalize">${o.status}</p>
       </div>
-      <p style="color:${theme.textDim};font-size:11px;margin:6px 0">${itemsLine}</p>
-      ${o.notes?`<p style="color:${theme.ruby};font-size:11px;margin:0 0 6px">Note: ${o.notes}</p>`:''}
+      <p style="color:${theme.textDim};font-size:11px;margin:6px 0">${esc(itemsLine)}</p>
+      ${o.notes?`<p style="color:${theme.ruby};font-size:11px;margin:0 0 6px">Note: ${esc(o.notes)}</p>`:''}
       <p style="color:${theme.text};font-size:12px;font-weight:700;margin:0 0 8px">Rs ${o.total}</p>
       <div style="display:flex;gap:8px">
         ${nextStatus[o.status]?`<button data-advance-order="${o.id}:${nextStatus[o.status]}" style="flex:1;background:${theme.gold};border-radius:9px;padding:9px;color:${theme.bg};font-weight:700;font-size:12px">${nextLabel[o.status]}</button>`:''}
@@ -1188,7 +1220,7 @@ function renderStaffService(){
   const rows = state.staffServiceRequests.map(r=>`
     <div style="display:flex;align-items:center;justify-content:space-between;background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:12px;margin-bottom:9px">
       <div>
-        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">Table ${r.tableNumber}</p>
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">Table ${esc(r.tableNumber)}</p>
         <p style="color:${theme.textDim};font-size:11px;margin:2px 0 0">${typeLabel[r.type]||r.type}</p>
       </div>
       <button data-resolve-service="${r.id}" style="background:${theme.teal};border-radius:9px;padding:8px 12px;color:${theme.bg};font-weight:700;font-size:12px">Done</button>
@@ -1207,11 +1239,11 @@ function renderReviewsList(reviews, backId){
   const rows = reviews.map(r=>`
     <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:12px;padding:12px;margin-bottom:10px;text-align:left">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${r.memberName} · #${r.orderId}</p>
+        <p style="color:${theme.text};font-size:13px;font-weight:700;margin:0">${esc(r.memberName)} · #${r.orderId}</p>
         <p style="color:${theme.gold};font-size:13px;margin:0">${'★'.repeat(r.rating)}${'☆'.repeat(5-r.rating)}</p>
       </div>
-      <p style="color:${theme.textDim};font-size:11px;margin:6px 0 0">${r.items}${r.tableNumber?' · Table '+r.tableNumber:''}</p>
-      ${r.feedback?`<p style="color:${theme.text};font-size:12px;margin:8px 0 0;font-style:italic">"${r.feedback}"</p>`:''}
+      <p style="color:${theme.textDim};font-size:11px;margin:6px 0 0">${esc(r.items)}${r.tableNumber?' · Table '+esc(r.tableNumber):''}</p>
+      ${r.feedback?`<p style="color:${theme.text};font-size:12px;margin:8px 0 0;font-style:italic">"${esc(r.feedback)}"</p>`:''}
       <p style="color:${theme.textDim};font-size:10px;margin:8px 0 0">${new Date(r.createdAt).toLocaleString()}</p>
     </div>`).join('');
   return `<div style="padding:18px 4px 4px">
@@ -1569,7 +1601,7 @@ function bind(){
       localStorage.setItem('kayaStaffName', res.staffName);
       state.staffToken=res.token; state.staffName=res.staffName; state.staffError=''; state.lookupError='';
       state.step='staffLookup';
-      startStaffAlertPolling();
+      startStaffAlertPolling(); registerForStaffPushNotifications();
     }catch(err){ state.staffError=err.message; }
     render();
   };
@@ -1718,6 +1750,18 @@ function bind(){
     render();
   };
 
+  if(q('deleteAccountBtn')) q('deleteAccountBtn').onclick=async ()=>{
+    const card=(q('resetPwCardInput').value||'').trim().toUpperCase();
+    if(!card){ state.deleteAccountError='Enter a card number first'; state.deleteAccountMsg=''; render(); return; }
+    if(!confirm(`Permanently delete card ${card}? This cannot be undone.`)) return;
+    try{
+      await api('/api/admin/members/'+encodeURIComponent(card),'DELETE',null,state.adminToken);
+      state.deleteAccountError=''; state.deleteAccountMsg=`Card ${card} deleted.`;
+      state.adminStats=await api('/api/admin/stats','GET',null,state.adminToken);
+    }catch(err){ state.deleteAccountError=err.message; state.deleteAccountMsg=''; }
+    render();
+  };
+
   if(q('sendAnnouncement')) q('sendAnnouncement').onclick=async ()=>{
     const message=(q('announcementDraftInput').value||'').trim();
     state.announcementDraft=message;
@@ -1811,7 +1855,7 @@ async function init(){
   if(state.step==='landing'){
     const staffToken=localStorage.getItem('kayaStaffToken');
     const staffName=localStorage.getItem('kayaStaffName');
-    if(staffToken && staffName){ state.staffToken=staffToken; state.staffName=staffName; state.step='staffLookup'; startStaffAlertPolling(); }
+    if(staffToken && staffName){ state.staffToken=staffToken; state.staffName=staffName; state.step='staffLookup'; startStaffAlertPolling(); registerForStaffPushNotifications(); }
   }
 
   if(state.step==='landing'){
