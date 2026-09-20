@@ -80,14 +80,16 @@ app.post('/api/customer/signup', async (req, res) => {
   if(!cleanName || !password){
     return res.status(400).json({ error: 'Name and password are required' });
   }
-  if(!cleanEmail || !EMAIL_RE.test(cleanEmail)){
+  // Email is only needed when verification codes are switched on; otherwise
+  // it's optional (and validated only if someone chooses to give one).
+  if((config.REQUIRE_EMAIL_VERIFICATION || cleanEmail) && !EMAIL_RE.test(cleanEmail)){
     return res.status(400).json({ error: 'A valid email is required' });
   }
   const nameTaken = Object.values(db.data.members).some(m => m.name.toLowerCase() === cleanName.toLowerCase());
   if(nameTaken){
-    return res.status(409).json({ error: 'That name already has a card — try logging in instead' });
+    return res.status(409).json({ error: 'That name already has a card — log in instead, or add your surname to make it unique (e.g. "Ahmed K")' });
   }
-  const emailTaken = Object.values(db.data.members).some(m => m.email && m.email.toLowerCase() === cleanEmail);
+  const emailTaken = cleanEmail && Object.values(db.data.members).some(m => m.email && m.email.toLowerCase() === cleanEmail);
   if(emailTaken){
     return res.status(409).json({ error: 'That email is already registered — try logging in instead' });
   }
@@ -156,7 +158,7 @@ app.post('/api/customer/login', (req, res) => {
   const { identifier, password } = req.body || {};
   const clean = String(identifier || '').trim().toLowerCase();
   const member = Object.values(db.data.members).find(
-    m => m.name.toLowerCase() === clean || (m.email && m.email.toLowerCase() === clean)
+    m => m.name.toLowerCase() === clean || m.cardNumber.toLowerCase() === clean || (m.email && m.email.toLowerCase() === clean)
   );
   if(!member || !bcrypt.compareSync(String(password || ''), member.passwordHash)){
     return res.status(401).json({ error: 'Name/email or password not recognized' });
