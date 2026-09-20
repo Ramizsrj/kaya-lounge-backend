@@ -586,13 +586,13 @@ function renderLanding(){
 function renderSignup(){
   return `<div style="padding:20px 4px 4px">
     <p style="color:${theme.gold};font-size:18px;font-weight:700;text-align:center;margin:0 0 6px">Create your account</p>
-    <p style="color:${theme.textDim};font-size:12px;text-align:center;margin:0 0 20px">A name, email and password keeps your card yours, on any phone</p>
+    <p style="color:${theme.textDim};font-size:12px;text-align:center;margin:0 0 20px">A name and password keeps your card yours, on any phone</p>
     <div class="label">Your name</div>
     <input id="nameInput" placeholder="e.g. Ahmed" />
-    <div class="label">Email</div>
-    <input id="emailInput" type="email" placeholder="you@example.com" />
     <div class="label">Password</div>
     <input id="passwordInput" type="password" placeholder="Choose a password" />
+    <div class="label">Email (optional)</div>
+    <input id="emailInput" type="email" placeholder="you@example.com" />
     <div class="label">Phone (optional)</div>
     <input id="phoneInput" placeholder="03XX-XXXXXXX" />
     ${state.signupError ? `<p style="color:${theme.ruby};font-size:11px;margin:8px 0 0">${state.signupError}</p>` : ''}
@@ -604,13 +604,13 @@ function renderSignup(){
 function renderLogin(){
   return `<div style="padding:40px 20px;text-align:center;min-height:380px;display:flex;flex-direction:column;justify-content:center">
     <p style="color:${theme.gold};font-size:18px;font-weight:700;margin:0 0 18px">Log in to your card</p>
-    <div class="label" style="text-align:left;margin-top:0">Name or email</div>
-    <input id="loginNameInput" placeholder="e.g. Ahmed or you@example.com" />
+    <div class="label" style="text-align:left;margin-top:0">Name or card ID</div>
+    <input id="loginNameInput" placeholder="e.g. Ahmed or KY-0001" />
     <div class="label" style="text-align:left">Password</div>
     <input id="loginPasswordInput" type="password" placeholder="Your password" />
     ${state.loginError ? `<p style="color:${theme.ruby};font-size:11px;margin:-4px 0 12px">${state.loginError}</p>` : ''}
     <button id="loginSubmit" style="width:100%;background:${theme.ruby};border-radius:12px;padding:14px;color:${theme.bg};font-weight:700;font-size:14px;margin-top:4px">Log In</button>
-    <a id="goToForgotPassword" class="btn" style="color:${theme.textDim};font-size:11px;margin-top:12px;text-align:center">Forgot password?</a>
+    <p style="color:${theme.textDim};font-size:11px;margin:12px 0 0">Forgot your password? Ask a member of staff and they'll reset it for you.</p>
     <a id="backToLandingFromLogin" class="btn" style="color:${theme.textDim};font-size:12px;margin-top:10px;text-align:center">← Back</a>
   </div>`;
 }
@@ -1326,7 +1326,7 @@ function bind(){
     const emailVal=(q('emailInput').value||'').trim();
     const password=(q('passwordInput').value||'').trim();
     const phone=(q('phoneInput').value||'').trim();
-    if(!name || !emailVal || !password){ state.signupError='Name, email and password are required'; render(); return; }
+    if(!name || !password){ state.signupError='Name and password are required'; render(); return; }
     try{
       const res=await api('/api/customer/signup','POST',{name,email:emailVal,password,phone});
       state.signupError='';
