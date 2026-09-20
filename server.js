@@ -92,7 +92,8 @@ app.post('/api/customer/signup', async (req, res) => {
     return res.status(409).json({ error: 'That email is already registered — try logging in instead' });
   }
   const cardNumber = 'KY-' + String(db.data.nextCardNum++).padStart(4, '0');
-  const code = email.generateCode();
+  const requireVerify = config.REQUIRE_EMAIL_VERIFICATION;
+  const code = requireVerify ? email.generateCode() : null;
   const member = {
     cardNumber,
     name: cleanName,
@@ -103,14 +104,18 @@ app.post('/api/customer/signup', async (req, res) => {
     cycle: 10,
     totalVisits: 0,
     redeemed: [],
-    emailVerified: false,
+    emailVerified: !requireVerify,
     verificationCode: code,
-    verificationExpiry: Date.now() + 15 * 60 * 1000,
+    verificationExpiry: requireVerify ? Date.now() + 15 * 60 * 1000 : null,
     pushTokens: []
   };
   db.data.members[cardNumber] = member;
   logActivity('card_created', cardNumber, '');
   db.save();
+  if(!requireVerify){
+    const token = sign({ role: 'customer', cardNumber });
+    return res.status(201).json({ token, member: publicMember(member) });
+  }
   await email.sendVerificationEmail(cleanEmail, code);
   res.status(201).json({ pendingVerification: true, cardNumber, email: cleanEmail });
 });
@@ -156,7 +161,7 @@ app.post('/api/customer/login', (req, res) => {
   if(!member || !bcrypt.compareSync(String(password || ''), member.passwordHash)){
     return res.status(401).json({ error: 'Name/email or password not recognized' });
   }
-  if(member.emailVerified === false){
+  if(config.REQUIRE_EMAIL_VERIFICATION && member.emailVerified === false){
     return res.status(403).json({ error: 'Please verify your email before logging in', needsVerification: true, cardNumber: member.cardNumber });
   }
   const token = sign({ role: 'customer', cardNumber: member.cardNumber });
@@ -164,6 +169,8 @@ app.post('/api/customer/login', (req, res) => {
 });
 
 app.post('/api/customer/forgot-password', async (req, res) => {
+  // No email service connected yet — say so instead of pretending a code was sent.
+  if(!email.isConfigured) return res.json({ sent: false, unavailable: true });
   const { email: emailInput } = req.body || {};
   const cleanEmail = String(emailInput || '').trim().toLowerCase();
   const member = Object.values(db.data.members).find(m => m.email && m.email.toLowerCase() === cleanEmail);
