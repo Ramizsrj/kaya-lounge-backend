@@ -1329,9 +1329,16 @@ function bind(){
     if(!name || !emailVal || !password){ state.signupError='Name, email and password are required'; render(); return; }
     try{
       const res=await api('/api/customer/signup','POST',{name,email:emailVal,password,phone});
-      state.pendingCardNumber=res.cardNumber; state.pendingEmail=res.email;
-      state.signupError=''; state.verifyError=''; state.verifyMsg=''; state.verifyCodeInput='';
-      state.step='verifyEmail';
+      state.signupError='';
+      if(res.token){
+        localStorage.setItem('kayaCustomerToken', res.token);
+        state.member=res.member; state.step='wallet';
+        startPopupChecking(); registerForPushNotifications();
+      }else{
+        state.pendingCardNumber=res.cardNumber; state.pendingEmail=res.email;
+        state.verifyError=''; state.verifyMsg=''; state.verifyCodeInput='';
+        state.step='verifyEmail';
+      }
     }catch(err){ state.signupError=err.message; }
     render();
   };
@@ -1393,9 +1400,13 @@ function bind(){
     if(!emailVal){ state.forgotError='Enter your email'; render(); return; }
     state.forgotBusy=true; state.forgotError=''; state.forgotMsg=''; render();
     try{
-      await api('/api/customer/forgot-password','POST',{email:emailVal});
-      state.resetEmail=emailVal; state.resetError=''; state.resetMsg=''; state.resetCodeInput=''; state.resetNewPasswordInput='';
-      state.step='resetPassword';
+      const res=await api('/api/customer/forgot-password','POST',{email:emailVal});
+      if(res.unavailable){
+        state.forgotError="Password reset by email isn't available yet. Please ask a member of staff and they'll reset it for you.";
+      }else{
+        state.resetEmail=emailVal; state.resetError=''; state.resetMsg=''; state.resetCodeInput=''; state.resetNewPasswordInput='';
+        state.step='resetPassword';
+      }
     }catch(err){ state.forgotError=err.message; }
     state.forgotBusy=false;
     render();
