@@ -594,10 +594,11 @@ app.post('/api/admin/menu', auth('admin'), (req, res) => {
   const description = String((req.body && req.body.description) || '').trim();
   const price = parseFloat(req.body && req.body.price);
   const category = String((req.body && req.body.category) || '').trim();
+  const subcategory = String((req.body && req.body.subcategory) || '').trim();
   if(!name || !price || price <= 0 || !category){
     return res.status(400).json({ error: 'Name, price, and category are required' });
   }
-  const item = { id: db.data.nextMenuItemId++, name, description, price, category, available: true };
+  const item = { id: db.data.nextMenuItemId++, name, description, price, category, subcategory, available: true };
   db.data.menuItems.push(item);
   db.save();
   res.status(201).json(item);
@@ -612,6 +613,7 @@ app.patch('/api/admin/menu/:id', auth('admin'), (req, res) => {
   if(body.description !== undefined) item.description = String(body.description).trim();
   if(body.price !== undefined) item.price = parseFloat(body.price);
   if(body.category !== undefined) item.category = String(body.category).trim();
+  if(body.subcategory !== undefined) item.subcategory = String(body.subcategory).trim();
   if(body.available !== undefined) item.available = !!body.available;
   db.save();
   res.json(item);
