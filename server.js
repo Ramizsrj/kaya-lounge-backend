@@ -536,14 +536,45 @@ app.get('/api/admin/stats', auth('admin'), (req, res) => {
     if(a.action === 'reward_redeemed') byStaff[a.staffName].redemptions++;
   });
 
+  const registeredPushDevices = Object.values(db.data.members).flatMap(m => m.pushTokens || []).length
+    + db.data.staff.flatMap(s => s.pushTokens || []).length;
+
   res.json({
     memberCount,
     scans,
     stampsGiven,
     redemptions,
     byStaff: Object.values(byStaff),
-    activity: activity.slice(0, 30)
+    activity: activity.slice(0, 30),
+    pushConfigured: push.isConfigured,
+    registeredPushDevices
   });
+});
+
+// Lets an admin send a real push notification to every registered device
+// right now, so you can confirm lock-screen notifications actually work
+// (open the app on your phone, then use this) instead of waiting for the
+// next scheduled popup reminder.
+app.post('/api/admin/test-push', auth('admin'), async (req, res) => {
+  if(!push.isConfigured){
+    return res.status(400).json({ error: 'Push isn\'t configured yet — set FIREBASE_SERVICE_ACCOUNT on Render first.' });
+  }
+  const allTokens = Object.values(db.data.members).flatMap(m => m.pushTokens || [])
+    .concat(db.data.staff.flatMap(s => s.pushTokens || []));
+  if(!allTokens.length){
+    return res.status(400).json({ error: 'No devices are registered for push yet — open the app on your phone first, then try again.' });
+  }
+  const { sent, invalidTokens } = await push.sendToTokens(allTokens, {
+    title: 'The Kaya Lounge',
+    body: 'Test notification — if you see this on your lock screen, push is working! 🎉'
+  });
+  if(invalidTokens.length){
+    const invalidSet = new Set(invalidTokens);
+    Object.values(db.data.members).forEach(m => { if(m.pushTokens) m.pushTokens = m.pushTokens.filter(t => !invalidSet.has(t)); });
+    db.data.staff.forEach(s => { if(s.pushTokens) s.pushTokens = s.pushTokens.filter(t => !invalidSet.has(t)); });
+    db.save();
+  }
+  res.json({ sent, attempted: allTokens.length });
 });
 
 app.get('/api/admin/staff', auth('admin'), (req, res) => {
