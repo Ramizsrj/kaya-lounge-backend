@@ -48,4 +48,4 @@ async function sendToTokens(tokens, { title, body }) {
   return { sent: res.successCount, invalidTokens };
 }
 
-module.exports = { sendToTokens };
+module.exports = { sendToTokens, isConfigured: !!app };
