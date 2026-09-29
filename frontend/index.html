@@ -169,6 +169,7 @@ let state={
   resetPwCard:'', resetPwPassword:'', resetPwError:'', resetPwMsg:'',
   deleteAccountError:'', deleteAccountMsg:'',
   adminMenuItems:[], newMenuName:'', newMenuDesc:'', newMenuPrice:'', newMenuCategory:'Food', newMenuSubcategory:'', menuAdminError:'',
+  testPushBusy:false, testPushMsg:'', testPushError:'',
   announcement:null, dismissedAnnouncementTs:parseInt(localStorage.getItem('kayaDismissedAnnouncementTs')||'0',10),
   announcementDraft:'', announcementAdminError:'', announcementAdminMsg:'',
   popups:[], popupToShow:null, newPopupTime:'12:00', newPopupMessage:'', popupAdminError:'',
@@ -481,6 +482,7 @@ function render(){
     adminLogin:renderAdminLogin, adminPanel:renderAdminPanel,
     adminStaff:renderAdminStaff, adminPasswordReset:renderAdminPasswordReset, adminAnnouncements:renderAdminAnnouncements,
     adminPopups:renderAdminPopups, adminMenu:renderAdminMenu, adminActivity:renderAdminActivity, adminReviews:renderAdminReviews,
+    adminPush:renderAdminPush,
     staffReviews:renderStaffReviews,
     tableEntry:renderTableEntry, menu:renderMenu, category:renderCategory, cart:renderCart, checkout:renderCheckout,
     orderPlaced:renderOrderPlaced, myOrders:renderMyOrders,
@@ -850,6 +852,7 @@ function renderAdminPanel(){
     ${menuItem('🍽️','Menu items','goToAdminMenu')}
     ${menuItem('⭐','Customer reviews','goToAdminReviews')}
     ${menuItem('📋','Activity log','goToAdminActivity')}
+    ${menuItem('🔔','Notifications','goToAdminPush', stats.pushConfigured ? `${stats.registeredPushDevices||0} device(s)` : 'not set up')}
   </div>`;
 }
 
@@ -999,6 +1002,22 @@ function renderAdminMenu(){
       ${state.menuAdminError ? `<p style="color:${theme.ruby};font-size:11px;margin:0 0 8px">${state.menuAdminError}</p>` : ''}
       <button id="addMenuItem" style="width:100%;background:${theme.teal};border-radius:10px;padding:11px;color:${theme.bg};font-weight:700;font-size:13px">+ Add menu item</button>
     </div>
+  </div>`;
+}
+
+function renderAdminPush(){
+  const stats = state.adminStats || {};
+  return `<div style="padding:18px 4px 4px">
+    ${adminSectionHeader('Notifications')}
+    <div style="background:${theme.card};border:1px solid ${theme.border};border-radius:10px;padding:14px;margin-bottom:14px;text-align:left">
+      <p style="color:${theme.text};font-size:13px;margin:0 0 6px"><b>Push setup:</b> ${stats.pushConfigured ? `<span style="color:${theme.teal}">✓ configured</span>` : `<span style="color:${theme.ruby}">not set up</span>`}</p>
+      <p style="color:${theme.text};font-size:13px;margin:0">${stats.registeredPushDevices||0} device(s) currently registered</p>
+      ${!stats.pushConfigured ? `<p style="color:${theme.textDim};font-size:11px;margin:8px 0 0">Set FIREBASE_SERVICE_ACCOUNT on Render to turn this on.</p>` : ''}
+    </div>
+    <button id="sendTestPushBtn" style="width:100%;background:${theme.teal};border-radius:10px;padding:12px;color:${theme.bg};font-weight:700;font-size:13px" ${state.testPushBusy?'disabled':''}>${state.testPushBusy?'Sending…':'Send test notification'}</button>
+    ${state.testPushMsg?`<p style="color:${theme.teal};font-size:11px;margin:10px 0 0">${state.testPushMsg}</p>`:''}
+    ${state.testPushError?`<p style="color:${theme.ruby};font-size:11px;margin:10px 0 0">${state.testPushError}</p>`:''}
+    <p style="color:${theme.textDim};font-size:11px;margin:14px 0 0">Open the app on your phone first so it's registered, then send a test — you should see it pop up on your lock screen within a few seconds.</p>
   </div>`;
 }
 
@@ -1701,6 +1720,15 @@ function bind(){
   if(q('goToAdminPopups')) q('goToAdminPopups').onclick=()=>{state.step='adminPopups';render();};
   if(q('goToAdminMenu')) q('goToAdminMenu').onclick=()=>{state.step='adminMenu';render();};
   if(q('goToAdminActivity')) q('goToAdminActivity').onclick=()=>{state.step='adminActivity';render();};
+  if(q('goToAdminPush')) q('goToAdminPush').onclick=()=>{state.step='adminPush'; state.testPushMsg=''; state.testPushError=''; render();};
+  if(q('sendTestPushBtn')) q('sendTestPushBtn').onclick=async ()=>{
+    state.testPushBusy=true; state.testPushMsg=''; state.testPushError=''; render();
+    try{
+      const res = await api('/api/admin/test-push','POST',{},state.adminToken);
+      state.testPushMsg = `Sent to ${res.sent} of ${res.attempted} device(s). Check your lock screen.`;
+    }catch(err){ state.testPushError = err.message; }
+    state.testPushBusy=false; render();
+  };
   if(q('goToAdminReviews')) q('goToAdminReviews').onclick=async ()=>{
     state.step='adminReviews'; render();
     try{ state.adminReviews=await api('/api/admin/reviews','GET',null,state.adminToken); }catch(e){}
